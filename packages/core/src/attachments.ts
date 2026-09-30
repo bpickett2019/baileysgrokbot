@@ -1,10 +1,9 @@
+import type { AttachmentMimeType, MessageBlock } from "@rakazo/contracts";
 import {
   ATTACHMENT_MAX_BASE64_LENGTH,
   ATTACHMENT_MAX_BYTES,
-  type AttachmentMimeType,
   isAllowedAttachmentMimeType,
   isAttachmentImageMimeType,
-  type MessageBlock,
 } from "@rakazo/contracts";
 
 export class AttachmentValidationError extends Error {
@@ -132,6 +131,8 @@ const EXTENSION_MIME_TYPES: Record<string, AttachmentMimeType> = {
   ".webp": "image/webp",
   ".gif": "image/gif",
   ".pdf": "application/pdf",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".xls": "application/vnd.ms-excel",
   ".txt": "text/plain",
   ".md": "text/markdown",
   ".markdown": "text/markdown",
@@ -147,6 +148,8 @@ const MIME_TYPE_EXTENSIONS: Record<AttachmentMimeType, string> = {
   "image/webp": ".webp",
   "image/gif": ".gif",
   "application/pdf": ".pdf",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+  "application/vnd.ms-excel": ".xls",
   "text/plain": ".txt",
   "text/markdown": ".md",
   "text/csv": ".csv",
@@ -162,6 +165,10 @@ export function inferAttachmentMimeType(
   const extensionType = dot < 0 ? undefined : EXTENSION_MIME_TYPES[name.slice(dot).toLowerCase()];
   // Some browsers and native document pickers report Markdown as text/plain.
   if (extensionType === "text/markdown" && (!reportedType || reportedType === "text/plain")) {
+    return extensionType;
+  }
+  // Some systems associate CSV with Excel; keep it a text file, not a binary workbook.
+  if (extensionType === "text/csv" && reportedType === "application/vnd.ms-excel") {
     return extensionType;
   }
   if (reportedType && isAllowedAttachmentMimeType(reportedType)) return reportedType;

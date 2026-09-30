@@ -126,6 +126,52 @@ describe("current-turn thread files", () => {
     expect(currentTurnFilesInstruction(files)).toContain('"attachments/artifact-1.pdf"');
   });
 
+  it.each([
+    ["xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    ["xls", "application/vnd.ms-excel"],
+  ])(
+    "preserves %s workbook bytes and extension in the bot workspace",
+    async (extension, mimeType) => {
+      const bytes = new Uint8Array([0, 255, 128, 1]);
+      const name = `budget.${extension}`;
+      const writeFile = vi.fn().mockResolvedValue(undefined);
+      const files = await materializeCurrentTurnFiles(
+        {
+          prisma: {
+            artifact: {
+              findMany: vi
+                .fn()
+                .mockResolvedValue([
+                  { id: "workbook-1", name, mimeType, size: bytes.length, storageKey: "stored-1" },
+                ]),
+            },
+          } as unknown as PrismaClient,
+          artifacts: { get: vi.fn().mockResolvedValue(bytes) } as unknown as ArtifactStore,
+          sandbox: { writeFile } as unknown as SandboxProvider,
+        },
+        [{ kind: "file", artifactId: "workbook-1", name, mimeType, size: bytes.length }],
+        {
+          context: {
+            operationId: "run-1",
+            traceId: "run-1",
+            spaceId: "space-1",
+            userId: "user-1",
+            botId: "bot-1",
+            signal: new AbortController().signal,
+          },
+          computer: { id: "computer-1", botId: "bot-1", kind: "fake", providerRef: "fake-1" },
+          computerMode: "team",
+        },
+      );
+      expect(writeFile).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "computer-1" }),
+        { path: `bots/bot-1/attachments/workbook-1.${extension}`, content: bytes },
+        expect.objectContaining({ botId: "bot-1" }),
+      );
+      expect(currentTurnFilesInstruction(files)).toContain(`attachments/workbook-1.${extension}`);
+    },
+  );
+
   it("also materializes image attachments, not just files", async () => {
     // A photo attached in chat is only handed to the model as inline vision
     // content otherwise (loadCurrentTurnImages) — a bot that needs the actual

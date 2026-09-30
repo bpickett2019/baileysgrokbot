@@ -28,6 +28,36 @@ shutdown() {
 }
 trap shutdown TERM INT
 
+# Host-run supervisors preserve the host uid/gid for bind-mounted homes. On macOS
+# (and custom Linux users) that uid may not exist in the image's passwd database.
+# D-Bus needs a resolvable identity. Supply one to our children without becoming
+# root, changing /etc/passwd, or changing ownership of the mounted home.
+computer_uid="$(id -u)"
+computer_gid="$(id -g)"
+if ! getent passwd "$computer_uid" >/dev/null; then
+  nss_wrapper=""
+  for library in /usr/lib/*/libnss_wrapper.so /usr/lib/libnss_wrapper.so; do
+    if [[ -f "$library" ]]; then
+      nss_wrapper="$library"
+      break
+    fi
+  done
+  if [[ -z "$nss_wrapper" ]]; then
+    echo "libnss_wrapper is required for computer uid $computer_uid" >&2
+    exit 1
+  fi
+  identity_dir="$(mktemp -d /tmp/rakazo/identity.XXXXXX)" || exit 1
+  awk -F: '$1 != "rakazo"' /etc/passwd > "$identity_dir/passwd"
+  printf 'rakazo:x:%s:%s:Rakazo:%s:/bin/bash\n' "$computer_uid" "$computer_gid" "$AGENT_HOME" \
+    >> "$identity_dir/passwd"
+  awk -F: -v gid="$computer_gid" '$1 != "rakazo" && $3 != gid' /etc/group > "$identity_dir/group"
+  printf 'rakazo:x:%s:\n' "$computer_gid" >> "$identity_dir/group"
+  export NSS_WRAPPER_PASSWD="$identity_dir/passwd"
+  export NSS_WRAPPER_GROUP="$identity_dir/group"
+  export LD_PRELOAD="$nss_wrapper${LD_PRELOAD:+:$LD_PRELOAD}"
+  export USER=rakazo LOGNAME=rakazo
+fi
+
 if [[ -n "${RAKAZO_COMPUTER_CONTROL_TOKEN:-}" ]]; then
   /usr/local/bin/rakazo-computer-control >/tmp/rakazo/control.log 2>&1 &
 fi
@@ -52,7 +82,15 @@ if [[ "$ready" -ne 1 ]]; then
 fi
 
 if command -v dbus-launch >/dev/null 2>&1; then
-  eval "$(dbus-launch --sh-syntax)"
+  if ! dbus_environment="$(dbus-launch --sh-syntax)"; then
+    echo "Failed to start the desktop D-Bus session" >&2
+    exit 1
+  fi
+  eval "$dbus_environment"
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    echo "D-Bus did not provide a session address" >&2
+    exit 1
+  fi
   # rakazo-browser is launched later without this session's environment; the
   # file-chooser portals only work if the browser finds the same bus.
   printf 'export DBUS_SESSION_BUS_ADDRESS=%s\n' "$DBUS_SESSION_BUS_ADDRESS" \

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   AttachmentValidationError,
+  attachmentExtensionForMimeType,
   attachmentsForBot,
   blocksToAgentHistoryText,
   decodeAttachmentBase64,
   inferAttachmentMimeType,
+  messageBlockForArtifact,
   promptTextForAttachments,
   userTurnMessageForRun,
   validateAttachmentMimeType,
@@ -69,6 +71,36 @@ describe("attachment helpers", () => {
     expect(inferAttachmentMimeType("notes.markdown", "text/plain")).toBe("text/markdown");
     expect(inferAttachmentMimeType("notes.md", "application/pdf")).toBe("application/pdf");
     expect(inferAttachmentMimeType("archive.zip", "")).toBeNull();
+  });
+
+  it.each([
+    [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    [".xls", "application/vnd.ms-excel"],
+  ])("supports %s workbooks as file attachments", (extension, mimeType) => {
+    const name = `budget${extension}`;
+    expect(() => validateAttachmentMimeType(mimeType)).not.toThrow();
+    for (const reportedType of [
+      undefined,
+      "",
+      "application/octet-stream",
+      "application/zip",
+      mimeType,
+    ]) {
+      expect(inferAttachmentMimeType(name, reportedType)).toBe(mimeType);
+      expect(inferAttachmentMimeType(name.toUpperCase(), reportedType)).toBe(mimeType);
+    }
+    expect(attachmentExtensionForMimeType(mimeType)).toBe(extension);
+    expect(messageBlockForArtifact({ id: "art_excel", name, mimeType, size: 42 })).toEqual({
+      kind: "file",
+      artifactId: "art_excel",
+      name,
+      mimeType,
+      size: 42,
+    });
+  });
+
+  it("keeps CSV files as text when a picker reports the Excel MIME type", () => {
+    expect(inferAttachmentMimeType("budget.CSV", "application/vnd.ms-excel")).toBe("text/csv");
   });
 
   it("scopes current-turn images to user-triggered runs", () => {
