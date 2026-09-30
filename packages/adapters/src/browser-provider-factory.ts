@@ -1,10 +1,13 @@
 import type { BrowserProvider, SandboxProvider } from "@rakazo/adapter-kit";
 import { EmulatorBrowserProvider } from "./browser-emulator.js";
 import { ComputerBrowserProvider } from "./computer-browser.js";
+import { EgoBrowserProvider } from "./ego-browser.js";
 import { FakeBrowserProvider, type FakeBrowserProviderOptions } from "./fake-browser.js";
 
 export type CreateBrowserProviderOptions = FakeBrowserProviderOptions & {
   sandbox?: SandboxProvider;
+  /** Host-owned browser binding; defaults to BROWSER_CONNECTION_FILE. */
+  connectionFile?: string;
 };
 
 /**
@@ -34,6 +37,10 @@ export function createBrowserProvider(
     case "sandbox":
     case "":
       return new ComputerBrowserProvider(options);
+    case "ego":
+      return new EgoBrowserProvider(
+        options?.connectionFile ?? process.env.BROWSER_CONNECTION_FILE ?? "",
+      );
     case "fake":
       return new FakeBrowserProvider(options);
     case "emulator":

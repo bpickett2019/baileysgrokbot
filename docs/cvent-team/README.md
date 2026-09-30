@@ -4,7 +4,7 @@ Reusable configuration for a supervised RR-workbook-to-Cvent workflow. This is a
 initial playbook, not a validated unattended event builder.
 
 - `bots.json`: Chief and six specialist definitions, with no account or database IDs.
-- `skills/`: eight agent-authored runbooks exported from the local setup.
+- `skills/`: eight agent-authored runbooks plus the Ego navigation adapter guide.
 - Chief coordinates with `cvent-rr-event-build`; specialists reference their lane skills.
 - Use a Team Computer and a user-configured model connection. Model credentials are not included.
 
@@ -37,5 +37,6 @@ delete, or clone without the authorization specified in the runbooks. Browser wo
 must be serialized and verified. These are agent instructions, not a substitute for
 application-level permissions or exhaustive QA.
 
-The first checkpoint retains the existing sandbox browser. Ego navigation is a
-separate follow-up integration so this version remains a recoverable baseline.
+The `pre-ego-navigation` tag retains the original sandbox-browser checkpoint.
+The optional Ego adapter and its limitations are documented in
+[../ego-navigation.md](../ego-navigation.md).

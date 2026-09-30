@@ -318,6 +318,37 @@ describe("run tool selection", () => {
     expect(withoutPage).toEqual(expect.arrayContaining(["computer_observe", "computer_act"]));
   });
 
+  it("uses page tools and user questions, not sandbox takeover, for a separate browser", () => {
+    const names = selectBuiltinToolsForRun({
+      graphicalToolsAllowed: false,
+      pageBrowserAllowed: true,
+      separateBrowser: true,
+      groupId: null,
+      trigger: "message",
+      semanticMemoryEnabled: false,
+      messagingChannelRun: false,
+    }).map((tool) => tool.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "browser_act",
+        "browser_snapshot",
+        "browser_navigate",
+        "ask_user",
+        "shell",
+        "write_file",
+      ]),
+    );
+    for (const tool of [
+      "computer_act",
+      "computer_observe",
+      "open_path",
+      "launch_app",
+      "request_takeover",
+    ]) {
+      expect(names).not.toContain(tool);
+    }
+  });
+
   it("withholds schedule creation only from routine-triggered runs", () => {
     expect(toolNames("routine")).not.toContain("schedule_create");
     expect(toolNames("routine")).toContain("task_catalog");

@@ -57,6 +57,9 @@ async function main() {
     process.env.VERIFY_DATABASE = "1";
     process.env.WAKEUP_DRIVER = "memory";
     process.env.SANDBOX_PROVIDER = sandboxProvider;
+    // Tests use their sandbox's browser, never a developer's authorized host session.
+    process.env.BROWSER_PROVIDER = "computer";
+    delete process.env.BROWSER_CONNECTION_FILE;
     process.env.AGENT_RUNTIME = agentRuntime;
     // Playwright/E2E force the offline cloud-agent emulator; clear Cursor keys so cards never hit a live VM.
     process.env.CLOUD_AGENT_PROVIDER = "emulator";

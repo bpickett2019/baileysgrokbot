@@ -5,6 +5,9 @@
 if (!process.env.VERIFY_PROVIDERS) {
   process.env.AGENT_RUNTIME = "scripted";
   process.env.SANDBOX_PROVIDER = "fake";
+  // Never connect an offline test to the operator's host browser.
+  process.env.BROWSER_PROVIDER = "computer";
+  delete process.env.BROWSER_CONNECTION_FILE;
   process.env.CLOUD_AGENT_PROVIDER = "emulator";
   delete process.env.CURSOR_API_KEY;
   process.env.WAKEUP_DRIVER = "memory";

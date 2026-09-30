@@ -407,6 +407,8 @@ export interface WebProvider extends WebSearchProvider, WebFetchProvider {
  * page tool cannot operate or the task needs the desktop itself.
  */
 export interface BrowserProvider {
+  /** Adapter-specific usage and safe recovery guidance, without credentials. */
+  readonly instructions?: string;
   describe(): AdapterDescriptor<BrowserCapabilities>;
   navigate(
     computer: ComputerRef,

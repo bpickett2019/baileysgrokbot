@@ -34,7 +34,7 @@ export async function browserNavigateFromTool(
     if (!/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password) {
       return {
         error: "An HTTP(S) URL without embedded credentials is required",
-        fallback: "computer_act" as const,
+        ...browserFallback(browser),
       };
     }
     const result = await browser.navigate(computer, { url, signal: context.signal }, context);
@@ -43,7 +43,7 @@ export async function browserNavigateFromTool(
     context.signal.throwIfAborted();
     return {
       error: error instanceof Error ? error.message : String(error),
-      fallback: "computer_act" as const,
+      ...browserFallback(browser),
     };
   }
 }
@@ -62,7 +62,7 @@ export async function browserSnapshotFromTool(
     context.signal.throwIfAborted();
     return {
       error: error instanceof Error ? error.message : String(error),
-      fallback: "computer_act" as const,
+      ...browserFallback(browser),
     };
   }
 }
@@ -96,7 +96,7 @@ export async function browserActFromTool(
       ok: false,
       uncertain: true,
       error: error instanceof Error ? error.message : String(error),
-      fallback: "computer_act" as const,
+      ...browserFallback(browser),
     };
   }
 }
@@ -136,6 +136,12 @@ export function parseBrowserActions(value: unknown): BrowserActInput[] {
     }
     return { kind, ref };
   });
+}
+
+function browserFallback(browser: BrowserProvider): { fallback?: "computer_act" } {
+  return browser.describe().capabilities.computerDesktop === false
+    ? {}
+    : { fallback: "computer_act" };
 }
 
 function formatBrowserResult<T extends { fallback?: "computer_act"; error?: string }>(result: T) {

@@ -736,6 +736,8 @@ export interface WebFetchResult {
 
 /** Page-level browser on the bot computer (DOM refs), not a hosted browser vendor. */
 export interface BrowserCapabilities {
+  /** False when page tools operate a separate browser, not the sandbox desktop. */
+  computerDesktop?: boolean;
   page: boolean;
   /** True when element refs from snapshot can be clicked or filled. */
   refs: boolean;
