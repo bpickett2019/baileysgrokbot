@@ -13,6 +13,7 @@
       "!**/build",
       "!**/coverage",
       "!**/design",
+      "!docs/vendor/ego-browser",
       "!**/packages/db/src/generated",
       "!**/apps/mobile/.expo",
       "!**/playwright-report",

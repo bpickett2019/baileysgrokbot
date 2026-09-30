@@ -4,12 +4,17 @@ Reusable configuration for a supervised RR-workbook-to-Cvent workflow. This is a
 initial playbook, not a validated unattended event builder.
 
 - `bots.json`: Chief and six specialist definitions, with no account or database IDs.
-- `skills/`: eight agent-authored runbooks plus the Ego navigation adapter guide.
+- `skills/`: eight build runbooks, the active Team Computer browser workflow, and an optional host-Ego adapter guide.
+- `../vendor/ego-browser/`: the complete unmodified Ego skill, references, installer, example learnings, and MIT license (reference only; not auto-loaded).
 - Chief coordinates with `cvent-rr-event-build`; specialists reference their lane skills.
 - Use a Team Computer and a user-configured model connection. Model credentials are not included.
 
 On a fresh instance, create/import the skills through the Skills interface and create
 bots using these definitions. Give Chief the orchestration runbook as standing guidance.
+With `BROWSER_PROVIDER=computer`, use `/cvent-team-browser` for Ego-inspired semantic
+observation, batched actions, and verification on the existing Team screen. The
+skill does not install Ego Lite or expose its JavaScript SDK. Each bot can have a
+different screen; keep the signed-in bot driving if specialists lack that session.
 Importing this directory is not automatic; the current running instance already has
 these bots and skills stored in its local database.
 

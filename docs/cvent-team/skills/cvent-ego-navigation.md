@@ -5,7 +5,11 @@ description: Use the configured Ego browser through Rakazo page tools for superv
 
 # Ego navigation for the Cvent team
 
-The page tools now operate the operator-authorized Ego TaskSpace on the host, not
+Use only when `BROWSER_PROVIDER=ego` is explicitly configured. For the embedded
+Team Computer and `BROWSER_PROVIDER=computer`, follow `/cvent-team-browser` instead.
+This host-only guide must not override the active Team Computer workflow.
+
+In host-Ego mode, the page tools operate the operator-authorized Ego TaskSpace on the host, not
 Docker Chrome. Chief assigns one specialist as browser owner at a time. Use the
 same browser workspace across the event build; do not create another to bypass a
 login, error, or user takeover. Existing scope-of-work limits, pending questions,

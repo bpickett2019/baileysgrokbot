@@ -5,6 +5,16 @@ Ego is an opt-in host browser adapter. It replaces the existing `browser_navigat
 host shell or an arbitrary JavaScript execution tool. Docker remains the file and
 Python environment. Installing a skill alone does not connect these environments.
 
+## Team Computer alternative
+
+Ego Lite currently ships for macOS, not the Linux Team Computer. The complete
+[upstream skill reference](vendor/ego-browser/README.md) is included for inspection;
+copying it does not provide the native browser runtime. To keep the signed-in
+browser visible in Rakazo's embedded Team screen, select `BROWSER_PROVIDER=computer`
+and use [the adapted Team Computer skill](cvent-team/skills/cvent-team-browser.md).
+This applies Ego's observation, batching, and verification workflow to Rakazo's
+existing tools, not the Ego engine. No speedup has been measured.
+
 ## Requirements and configuration
 
 Run the API/worker on the same trusted desktop as an installed, onboarded Ego Lite
