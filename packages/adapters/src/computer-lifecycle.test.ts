@@ -13,6 +13,7 @@ import {
   acquireComputerExecutionLease,
   ComputerBusyError,
   computerSupportsUpdate,
+  finishRunComputerScreen,
   holdComputerExecutionLeaseForTakeover,
   provisionComputer,
   releaseComputerExecutionLease,
@@ -1347,19 +1348,84 @@ describe("computer provisioning", () => {
   });
 });
 
-describe("computer execution leases", () => {
-  it("does not serialize dedicated computers", async () => {
-    const prisma = leasePrisma({ scope: "dedicated" });
+describe("run screen cleanup", () => {
+  it.each(["writer", "researcher", "assistant"])(
+    "parks ordinary runs for %s without a special agent allowlist",
+    async (botId) => {
+      const parkScreen = vi.fn().mockResolvedValue(undefined);
+      const releaseScreen = vi.fn().mockResolvedValue(undefined);
+      const sandbox = { parkScreen, releaseScreen } as unknown as SandboxProvider;
+      const computer = {
+        id: "computer",
+        botId: "home",
+        kind: "docker",
+        providerRef: "container",
+      } as const;
+      await finishRunComputerScreen(sandbox, computer, { ...context, botId }, true);
+      expect(parkScreen).toHaveBeenCalledWith(computer, { ...context, botId });
+      expect(releaseScreen).not.toHaveBeenCalled();
+    },
+  );
 
+  it("tears down cancelled/failed runs and falls back safely for unsupported providers", async () => {
+    const parkScreen = vi.fn().mockResolvedValue(undefined);
+    const releaseScreen = vi.fn().mockResolvedValue(undefined);
+    const computer = {
+      id: "computer",
+      botId: "home",
+      kind: "docker",
+      providerRef: "container",
+    } as const;
+    await finishRunComputerScreen(
+      { parkScreen, releaseScreen } as unknown as SandboxProvider,
+      computer,
+      context,
+      false,
+    );
+    expect(parkScreen).not.toHaveBeenCalled();
+    expect(releaseScreen).toHaveBeenCalledOnce();
+    await finishRunComputerScreen(
+      { releaseScreen } as unknown as SandboxProvider,
+      computer,
+      context,
+      true,
+    );
+    expect(releaseScreen).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not silently kill a live browser if parking fails", async () => {
+    const parkScreen = vi.fn().mockRejectedValue(new Error("control revoke failed"));
+    const releaseScreen = vi.fn();
+    const computer = {
+      id: "computer",
+      botId: "home",
+      kind: "docker",
+      providerRef: "container",
+    } as const;
     await expect(
-      acquireComputerExecutionLease(prisma.client, {
-        computerId: "computer-1",
-        runId: "run-1",
-        botId: "bot-1",
-      }),
-    ).resolves.toBeNull();
-    expect(prisma.updateManyAndReturn).not.toHaveBeenCalled();
-    expect(prisma.create).not.toHaveBeenCalled();
+      finishRunComputerScreen(
+        { parkScreen, releaseScreen } as unknown as SandboxProvider,
+        computer,
+        context,
+        true,
+      ),
+    ).rejects.toThrow("control revoke failed");
+    expect(releaseScreen).not.toHaveBeenCalled();
+  });
+});
+
+describe("computer execution leases", () => {
+  it("fences dedicated screens across runs as well as Team screens", async () => {
+    const prisma = leasePrisma({ scope: "dedicated", reclaim: true, fence: 8 });
+    const lease = await acquireComputerExecutionLease(prisma.client, {
+      computerId: "computer-1",
+      runId: "run-2",
+      botId: "bot-1",
+    });
+    expect(lease).toMatchObject({ runId: "run-2", fence: 8 });
+    expect(screenLeaseIdForRun(lease, "run-2", 1)).toBe("run-2:8");
+    await releaseComputerExecutionLease(prisma.client, lease);
+    expect(prisma.deleteMany).not.toHaveBeenCalled();
   });
 
   it("fences one Team bot's screen and expires only the matching lease", async () => {

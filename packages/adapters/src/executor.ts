@@ -193,6 +193,7 @@ import {
   acquireComputerExecutionLease,
   ComputerBusyError,
   type ComputerExecutionLease,
+  finishRunComputerScreen,
   holdComputerExecutionLeaseForTakeover,
   provisionComputer,
   releaseComputerExecutionLease,
@@ -1213,6 +1214,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       let leaseValid = true;
       let lastLeaseCheckAt = 0;
       let retainComputerLease = false;
+      let preserveScreen = false;
       let screenRelease: { computer: ComputerRef; context: AdapterContext } | undefined;
       let runAbortController: AbortController | null = null;
       let detachShutdown: (() => void) | undefined;
@@ -2330,6 +2332,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!paused) {
               throw new Error("Could not pause this run for approval; try sending again.");
             }
+            preserveScreen = true;
             await notifyRun(deps, run, {
               kind: "help",
               title: `${bot.name} needs approval`,
@@ -4251,6 +4254,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 offeredActions: event.actions,
               });
               if (!paused) return;
+              preserveScreen = true;
               await notifyRun(deps, run, {
                 kind: "help",
                 title: `${bot.name} needs an answer`,
@@ -4580,6 +4584,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             markUnread: completionMarksUnread(run.trigger, text),
           });
           if (!completed) return;
+          preserveScreen = true;
           if (completed.continuationRunId) {
             await deps.jobs
               .enqueue(runContinueJob(completed.continuationRunId))
@@ -4733,9 +4738,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
         clearInterval(heartbeat);
         if (!retainComputerLease) {
           if (screenRelease) {
-            await deps.sandbox
-              .releaseScreen?.(screenRelease.computer, screenRelease.context)
-              .catch(() => undefined);
+            await finishRunComputerScreen(
+              deps.sandbox,
+              screenRelease.computer,
+              screenRelease.context,
+              preserveScreen,
+            ).catch((error) => getLogger().error("run screen cleanup failed", error));
           }
           await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
         }

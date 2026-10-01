@@ -45,7 +45,12 @@ class Page(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html")
         self.end_headers()
         setting = "" if bot == "read" else f"document.cookie='bot_{bot}=saved; Max-Age=86400; Path=/';"
-        self.wfile.write(f"<script>{setting} document.title=document.cookie;</script>".encode())
+        self.wfile.write((f"<script>{setting} "
+            "window.liveNonce = Math.random().toString(36); "
+            "sessionStorage.setItem('live-session', window.liveNonce); "
+            "document.cookie='session_only=present; Path=/'; "
+            "document.title=document.cookie+'|'+sessionStorage.getItem('live-session');</script>"
+        ).encode())
 
     def log_message(self, *_args):
         pass
@@ -119,16 +124,47 @@ def main():
     assert b"101 Switching Protocols" in response, response
     peer, response = websocket(view_port, "view-b")
     assert b"101 Switching Protocols" in response, response
+    control_token = "control-a"
+    controller, response = websocket(control_port, control_token)
+    assert b"101 Switching Protocols" in response, response
+
+    if "parka" in commands:
+        # Ordinary run boundaries retain both bots' exact live browser processes,
+        # tabs, session-only cookies and per-tab state, not just their profile files.
+        def live_state(bot):
+            key = Path(commands['profile' + bot]).name.removeprefix('chromium-bot-')
+            pid = Path(f'/tmp/rakazo/browser-pid-{key}').read_text()
+            with urlopen(f"http://127.0.0.1:{commands['debug' + bot]}/json/list", timeout=2) as response:
+                tabs = sorted((p['id'], p.get('title'), p.get('url')) for p in json.load(response) if p['type'] == 'page')
+            return pid, tabs
+        before = {bot: live_state(bot) for bot in 'ab'}
+        for bot in 'ab':
+            run(commands, 'park' + bot)
+            run(commands, 'ensure' + bot)
+            assert live_state(bot) == before[bot], f'parking restarted or navigated bot {bot}'
+        try:
+            while controller.recv(8192):
+                pass
+        except (ConnectionResetError, BrokenPipeError):
+            pass
+        finally:
+            controller.close()
+        stale, response = websocket(control_port, control_token)
+        stale.close()
+        assert b'101 Switching Protocols' not in response, response
+        run(commands, 'nextcontrola')
+        control_token = 'control-a-next'
+        controller, response = websocket(control_port, control_token)
+        assert b'101 Switching Protocols' in response, response
+        assert live_state('a') == before['a'], 'new human control restarted the browser'
+
     old_targets = [
         line.split(": ", 1)[1].strip().split(":", 1)[1]
         for file in Path("/tmp/rakazo/desktop-targets").glob("*")
         for line in file.read_text().splitlines()
-        if line.startswith(("view-a: ", "control-a: "))
+        if line.startswith(("view-a: ", control_token + ": "))
     ]
     assert len(old_targets) == 2
-    controller, response = websocket(control_port, "control-a")
-    assert b"101 Switching Protocols" in response, response
-
     profile = Path(commands["profilea"])
     login = profile / "fake-login"
     login.write_text("preserved-after-browser-restart")
@@ -176,7 +212,7 @@ def main():
         assert chunk, "peer viewer disconnected"
         data += chunk
     peer.close()
-    for port, old, current in [(view_port, "view-a", "view-c"), (control_port, "control-a", "control-c")]:
+    for port, old, current in [(view_port, "view-a", "view-c"), (control_port, control_token, "control-c")]:
         connection, response = websocket(port, old)
         connection.close()
         assert b"101 Switching Protocols" not in response, response

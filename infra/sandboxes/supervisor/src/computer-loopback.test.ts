@@ -1046,6 +1046,80 @@ describe("screen release status", () => {
     };
   }
 
+  it("parks a fenced screen without browser teardown and rejects stale cleanup", async () => {
+    const { supervisorApp } = await import("./index.js");
+    const commands: string[] = [];
+    const container = managedContainer(
+      vi.fn(async ({ Cmd }: { Cmd: string[] }) => {
+        commands.push(Cmd.join(" "));
+        return { start: async () => Readable.from([]), inspect: async () => ({ ExitCode: 0 }) };
+      }),
+    );
+    mocks.docker.getContainer.mockReturnValue(container);
+    const open = (lease: string) =>
+      supervisorApp.request("/computers/parked/screen-mode", {
+        method: "POST",
+        headers: { ...headers, "x-rakazo-screen-lease-id": lease },
+        body: JSON.stringify({ interactive: false, revokeControl: false }),
+      });
+    const park = (lease: string) =>
+      supervisorApp.request("/computers/parked/screen/park", {
+        method: "POST",
+        headers: { ...headers, "x-rakazo-screen-lease-id": lease },
+      });
+    expect((await open("run-1:1")).status).toBe(200);
+    commands.length = 0;
+    expect((await park("run-1:1")).status).toBe(200);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toContain("control-token-1");
+    expect(commands[0]).not.toContain("Browser.close");
+    expect(commands[0]).not.toContain("sockets/view-1-");
+    expect((await open("run-2:2")).status).toBe(200);
+    commands.length = 0;
+    expect((await park("run-1:1")).status).toBe(200);
+    expect(commands).toEqual([]);
+    expect(
+      (
+        await supervisorApp.request("/computers/parked/screen", {
+          method: "DELETE",
+          headers: {
+            ...headers,
+            "x-rakazo-screen-lease-id": "run-2:2",
+            "x-rakazo-cancel-run-work": "1",
+          },
+        })
+      ).status,
+    ).toBe(200);
+    expect(commands.join("\n")).toContain("Browser.close");
+  });
+
+  it("requires computer identity and an execution lease for parking", async () => {
+    const { supervisorApp } = await import("./index.js");
+    const container = managedContainer();
+    mocks.docker.getContainer.mockReturnValue(container);
+    expect(
+      (
+        await supervisorApp.request("/computers/parked/screen/park", {
+          method: "POST",
+          headers,
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await supervisorApp.request("/computers/parked/screen/park", {
+          method: "POST",
+          headers: {
+            ...headers,
+            "x-rakazo-space-id": "wrong",
+            "x-rakazo-screen-lease-id": "run:1",
+          },
+        })
+      ).status,
+    ).toBe(403);
+    expect(container.exec).not.toHaveBeenCalled();
+  });
+
   it("returns 404 only when the computer is already missing", async () => {
     const { supervisorApp } = await import("./index.js");
     const missing = {

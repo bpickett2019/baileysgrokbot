@@ -1936,6 +1936,11 @@ description: Prepare standup notes
       computer: {
         findUniqueOrThrow: vi.fn(async () => ({ scope: "private", state: "running" })),
       },
+      computerExecutionLease: {
+        updateManyAndReturn: vi.fn(async () => []),
+        create: vi.fn(async () => ({ fence: 1 })),
+        updateMany: vi.fn(async () => ({ count: 1 })),
+      },
       attempt: {
         create: vi.fn(async () => ({ id: "attempt-1" })),
         updateMany: vi.fn(async () => ({ count: 1 })),

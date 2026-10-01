@@ -68,6 +68,7 @@ import {
   isComputerControlUnavailable,
   nextScreenIndex,
   normalizeWorkspaceRelative,
+  parkAssignedScreen,
   parseObservation,
   preferComputerControl,
   quiesceBrowserProfilesCommand,
@@ -784,6 +785,36 @@ app.post("/computers/:id/input", async (c) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return c.json({ ok: false, error: message }, 500);
+  }
+});
+
+app.post("/computers/:id/screen/park", async (c) => {
+  try {
+    const id = c.req.param("id");
+    const { container } = await managedContainer(
+      id,
+      c.req.header("x-rakazo-bot-id"),
+      c.req.header("x-rakazo-space-id"),
+    );
+    const screenId = c.req.header("x-rakazo-screen-id");
+    const leaseId = c.req.header("x-rakazo-screen-lease-id");
+    if (!screenId || !leaseId) return c.json({ error: "missing screen identity or lease" }, 400);
+    await withComputerScreenLock(id, () =>
+      parkAssignedScreen(computerScreens.get(id), screenId, leaseId, (index) =>
+        runContainerCommand(container, [
+          "bash",
+          "-eu",
+          "-c",
+          interactiveScreenCommand(false, undefined, screenPorts(index)),
+        ]),
+      ),
+    );
+    return c.json({ ok: true });
+  } catch (error) {
+    if (error instanceof ComputerIdentityError)
+      return c.json({ error: "invalid computer identity" }, 403);
+    const message = error instanceof Error ? error.message : String(error);
+    return c.json({ error: message || "computer screen failed to park" }, 500);
   }
 });
 

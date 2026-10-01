@@ -453,7 +453,8 @@ export async function acquireComputerExecutionLease(
   const computer = await prisma.computer.findUniqueOrThrow({ where: { id: input.computerId } });
   if (computer.maintenanceId && computer.maintenanceId !== input.runId)
     throw new ComputerBusyError();
-  if (computer.scope !== "team") return null;
+  // Dedicated computers also retain browser processes across runs. Keep a per-bot
+  // fence there too: a per-run fence resets to 1 and cannot reclaim a parked screen.
   if (isLiveSuspending(computer)) throw new ComputerBusyError();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + EXECUTION_LEASE_MS);
@@ -572,6 +573,22 @@ export async function releaseComputerExecutionLease(
   });
 }
 
+/** Normal run boundaries may park a desktop; cancellation/failure still tears it down.
+ * Providers without safe live-browser persistence keep their existing release behavior.
+ */
+export async function finishRunComputerScreen(
+  sandbox: SandboxProvider,
+  computer: ComputerRef,
+  context: AdapterContext,
+  preserve: boolean,
+): Promise<void> {
+  if (preserve && sandbox.parkScreen) {
+    await sandbox.parkScreen(computer, context);
+  } else {
+    await sandbox.releaseScreen?.(computer, context);
+  }
+}
+
 function isUniqueConstraintError(error: unknown) {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "P2002");
 }
@@ -652,8 +669,8 @@ export async function replaceComputer(
     throw new ComputerBusyError();
   }
   // Allow Reset on a stale "booting" or "suspending" row unless another bot still holds a live
-  // lease. Dedicated computers never create an execution-lease row, so the foreign-lease check
-  // alone cannot see an in-flight dedicated boot or idle stop. Refuse claim stamps younger than
+  // lease. The foreign-lease check does not cover this bot's own in-flight boot or
+  // a whole-computer idle stop. Refuse claim stamps younger than
   // an execution-lease TTL (not merely the boot-wait poll) so a slow dedicated provision or
   // suspend is not destroyed mid-flight. Also refuse while a run still uses the computer —
   // before claiming suspending — so rollback cannot bump @updatedAt under an in-flight boot.

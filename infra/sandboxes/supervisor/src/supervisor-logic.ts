@@ -233,6 +233,22 @@ export function releaseAssignedScreen(
   return slot.index;
 }
 
+/** Caller holds the computer screen lock. Keep the slot/profile/browser and read-only view;
+ * revoke only interactive transports. Stale finalizers must not touch a newer run's screen.
+ */
+export async function parkAssignedScreen(
+  assigned: Map<string, ScreenAssignment> | undefined,
+  screenId: string,
+  leaseId: string,
+  revokeControl: (index: number) => Promise<{ code: number; stderr: string }>,
+): Promise<void> {
+  const slot = assigned?.get(screenId);
+  if (!slot || slot.releasing || !slot.leaseId || !canReleaseScreenLease(slot.leaseId, leaseId))
+    return;
+  const result = await revokeControl(slot.index);
+  if (result.code !== 0) throw new Error(result.stderr || "computer screen control failed to stop");
+}
+
 export function completeReleasedScreen(
   assigned: Map<string, ScreenAssignment>,
   screenId: string,

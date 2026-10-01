@@ -150,6 +150,28 @@ describe("Docker sandbox", () => {
     ).resolves.toEqual(new Uint8Array());
   });
 
+  it("parks ordinary runs through a fenced request without deleting the screen", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new DockerSandboxProvider("http://supervisor.test", "test-token");
+    await provider.parkScreen(
+      { id: "computer", botId: "home-bot", kind: "docker", providerRef: "computer" },
+      context,
+    );
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      "http://supervisor.test/computers/computer/screen/park",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "x-rakazo-bot-id": "home-bot",
+          "x-rakazo-screen-id": "bot",
+          "x-rakazo-screen-lease-id": "run-1:1",
+          "x-rakazo-space-id": "workspace",
+        }),
+      }),
+    );
+  });
+
   it("releases this bot's screen assignment through the supervisor", async () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

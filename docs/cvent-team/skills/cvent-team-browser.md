@@ -113,6 +113,9 @@ or another bot. Resume only after the normal Rakazo control handback and require
 user approval. Do not ask the user to hand back the unrelated Mac Ego window.
 
 On completion, leave the existing signed-in browser and result available to the
-user. Do not translate Ego's `finish()` into killing Chromium, deleting profiles,
+user. Docker now parks every agent's browser across normal run boundaries; this is
+backend lifecycle behavior, not something the skill must implement. Stop/cancel,
+failures, maintenance, and whole-computer idle shutdown still close runtimes.
+Do not translate Ego's `finish()` into killing Chromium, deleting profiles,
 or closing user-owned tabs. Report what was verified and what still needs review;
 no unmeasured speedup or unattended-completion claims.

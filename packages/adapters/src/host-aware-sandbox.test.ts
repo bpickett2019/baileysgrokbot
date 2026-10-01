@@ -61,6 +61,25 @@ describe("host-aware sandbox", () => {
     expect(pageBrowser).not.toHaveBeenCalled();
   });
 
+  it("routes parking to the correct provider and preserves legacy fallback", async () => {
+    const isolated = new FakeSandboxProvider() as SandboxProvider;
+    isolated.parkScreen = vi.fn().mockResolvedValue(undefined);
+    const host = new FakeSandboxProvider();
+    const release = vi.spyOn(host, "releaseScreen").mockResolvedValue(undefined);
+    const sandbox = new HostAwareSandbox(isolated, host, async () => false);
+    const computer = {
+      id: "computer",
+      providerRef: "container",
+      botId: "home",
+      kind: "docker",
+    } as const;
+    await sandbox.parkScreen(computer, ctx);
+    expect(isolated.parkScreen).toHaveBeenCalledExactlyOnceWith(computer, ctx);
+    await sandbox.parkScreen({ ...computer, kind: "desktop" }, ctx);
+    expect(release).toHaveBeenCalledExactlyOnceWith({ ...computer, kind: "desktop" }, ctx);
+    expect(isolated.parkScreen).toHaveBeenCalledOnce();
+  });
+
   it("does not expose page commands when neither provider supports them", () => {
     const sandbox = new HostAwareSandbox(
       new FakeSandboxProvider(),

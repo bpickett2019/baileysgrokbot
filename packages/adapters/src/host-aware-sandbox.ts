@@ -177,6 +177,13 @@ export class HostAwareSandbox implements SandboxProvider {
     return this.route(computer).keepAlive?.(computer) ?? Promise.resolve();
   }
 
+  parkScreen(computer: ComputerRef, context: AdapterContext) {
+    const provider = this.route(computer);
+    return provider.parkScreen
+      ? provider.parkScreen(computer, context)
+      : (provider.releaseScreen?.(computer, context) ?? Promise.resolve());
+  }
+
   releaseScreen(computer: ComputerRef, context: AdapterContext) {
     return this.route(computer).releaseScreen?.(computer, context) ?? Promise.resolve();
   }

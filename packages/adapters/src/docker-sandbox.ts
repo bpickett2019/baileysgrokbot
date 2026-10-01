@@ -477,14 +477,22 @@ export class DockerSandboxProvider implements SandboxProvider {
     return { id: `docker-snap-${computer.id}`, createdAt: new Date().toISOString() };
   }
 
+  async parkScreen(computer: ComputerRef, context: AdapterContext): Promise<void> {
+    return this.finishScreen(computer, context, true);
+  }
+
   async releaseScreen(computer: ComputerRef, context: AdapterContext): Promise<void> {
+    return this.finishScreen(computer, context, false);
+  }
+
+  private async finishScreen(computer: ComputerRef, context: AdapterContext, park: boolean) {
     if (!context.botId) return;
     // Run cancellation must not skip cleanup, but cleanup still needs its own deadline.
     const deadline = requestDeadline(SCREEN_RELEASE_TIMEOUT_MS, "sandbox screen release timed out");
     try {
       const res = await withAbort(
-        fetch(this.url(`/computers/${computer.id}/screen`), {
-          method: "DELETE",
+        fetch(this.url(`/computers/${computer.id}/screen${park ? "/park" : ""}`), {
+          method: park ? "POST" : "DELETE",
           headers: this.headers(context, computer.botId),
           signal: deadline.signal,
         }),

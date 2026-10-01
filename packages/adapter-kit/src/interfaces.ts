@@ -159,7 +159,12 @@ export interface SandboxProvider {
   ): Promise<void>;
   snapshot(computer: ComputerRef, context: AdapterContext): Promise<SnapshotRef>;
   keepAlive?(computer: ComputerRef): Promise<void>;
-  /** Drop a single-screen graphical claim for this bot so another Team bot can use the display. */
+  /** End run control while preserving this bot's live browser/display until computer idle shutdown.
+   * Optional: providers whose workspace checkpoints require closing browsers retain releaseScreen.
+   * Must fence stale callers and revoke interactive transports without retaining an execution lease.
+   */
+  parkScreen?(computer: ComputerRef, context: AdapterContext): Promise<void>;
+  /** Tear down this bot's graphical runtime (stop/cancel), preserving its durable profile. */
   releaseScreen?(computer: ComputerRef, context: AdapterContext): Promise<void>;
   stop(computer: ComputerRef, context: AdapterContext): Promise<void>;
   destroy(computer: ComputerRef, context: AdapterContext): Promise<void>;

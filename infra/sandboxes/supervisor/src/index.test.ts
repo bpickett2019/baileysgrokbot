@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import { resolveSupervisorToken } from "@rakazo/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MAX_SUPERVISOR_FILE_REQUEST_BYTES,
   MAX_SUPERVISOR_REQUEST_BYTES,
@@ -32,6 +32,7 @@ import {
   isComputerControlUnavailable,
   nextScreenIndex,
   normalizeWorkspaceRelative,
+  parkAssignedScreen,
   parseObservation,
   preferComputerControl,
   releaseAssignedScreen,
@@ -701,6 +702,60 @@ describe("sandbox supervisor input containment", () => {
     expect(nextScreenIndex(assigned, "writer", "run-1:1")).toBe(0);
     expect(releaseAssignedScreen(assigned, "writer", "screen-view-writer:0")).toBeUndefined();
     expect(releaseAssignedScreen(assigned, "writer", "run-1:1")).toBe(0);
+  });
+
+  it("parks each bot independently and keeps its slot, view token, and execution fence", async () => {
+    const assigned = new Map<string, ScreenAssignment>();
+    const revoke = vi.fn(async () => ({ code: 0, stderr: "" }));
+    for (const bot of ["writer", "researcher"]) {
+      const index = nextScreenIndex(assigned, bot, `${bot}-run:1`);
+      assigned.get(bot)!.viewToken = `${bot}-view`;
+      await parkAssignedScreen(assigned, bot, `${bot}-run:1`, revoke);
+      expect(assigned.get(bot)).toEqual({
+        index,
+        leaseId: `${bot}-run:1`,
+        viewToken: `${bot}-view`,
+      });
+      expect(nextScreenIndex(assigned, bot, `${bot}-next:2`)).toBe(index);
+    }
+    expect(revoke.mock.calls).toEqual([[0], [1]]);
+    await parkAssignedScreen(assigned, "writer", "writer-run:1", revoke);
+    expect(revoke).toHaveBeenCalledTimes(2);
+    expect(() => nextScreenIndex(assigned, "writer", "writer-run:1")).toThrow(/newer execution/);
+  });
+
+  it("does not park missing, releasing, or unclaimed viewer screens", async () => {
+    const assigned = new Map<string, ScreenAssignment>([
+      ["viewer", { index: 0 }],
+      ["releasing", { index: 1, leaseId: "run:1", releasing: true }],
+    ]);
+    const revoke = vi.fn();
+    for (const bot of ["missing", "viewer", "releasing"])
+      await parkAssignedScreen(assigned, bot, "run:1", revoke);
+    await parkAssignedScreen(undefined, "writer", "run:1", revoke);
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it("leaves a failed park retryable without freeing or restarting the browser", async () => {
+    const assigned = new Map<string, ScreenAssignment>();
+    nextScreenIndex(assigned, "writer", "run:1");
+    await expect(
+      parkAssignedScreen(assigned, "writer", "run:1", async () => ({
+        code: 1,
+        stderr: "revoke failed",
+      })),
+    ).rejects.toThrow("revoke failed");
+    expect(assigned.get("writer")).toEqual({ index: 0, leaseId: "run:1" });
+  });
+
+  it("parking revokes control and terminal transports but not Chromium or the read-only view", () => {
+    const command = interactiveScreenCommand(false);
+    expect(command).toContain("control-token-1");
+    expect(command).toContain("terminal-1-");
+    expect(command).not.toContain("view-1-");
+    expect(command).not.toContain("Browser.close");
+    expect(command).not.toContain("Xvfb");
+    expect(command).not.toContain("browser-pid");
   });
 
   it("stops the released bot's browser without tearing down the primary desktop", () => {

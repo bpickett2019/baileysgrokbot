@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import { createThreadEvents, createThreadMessage, loadRunHistoryMessages } from "@rakazo/db";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 
@@ -35,6 +35,81 @@ describeIntegration("run executor lifecycle", () => {
   afterAll(async () => {
     await handles?.stop();
     rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it.each(["team", "dedicated"])(
+    "parks consecutive %s runs while releasing and advancing execution leases",
+    async (scope) => {
+      const seeded = await seedRun(`park-${scope}`, "write a file that says kept");
+      const bot = await handles.prisma.bot.findUniqueOrThrow({ where: { id: seeded.bot.id } });
+      await handles.prisma.computer.update({ where: { id: bot.computerId! }, data: { scope } });
+      const park = vi.fn().mockResolvedValue(undefined);
+      const release = vi.spyOn(handles.sandbox, "releaseScreen");
+      handles.sandbox.parkScreen = park;
+      try {
+        await handles.executor.continueRun(seeded.run.id, "park-worker");
+        const first = await handles.prisma.computerExecutionLease.findUniqueOrThrow({
+          where: { computerId_botId: { computerId: bot.computerId!, botId: bot.id } },
+        });
+        expect(first.expiresAt.getTime()).toBeLessThan(Date.now());
+        const next = await handles.prisma.run.create({
+          data: {
+            spaceId: seeded.me.spaceId,
+            botId: bot.id,
+            threadId: seeded.thread.id,
+            taskId: seeded.task.id,
+            userId: seeded.me.userId,
+            status: "queued",
+            trigger: "user",
+          },
+        });
+        await handles.executor.continueRun(next.id, "next-worker");
+        const second = await handles.prisma.computerExecutionLease.findUniqueOrThrow({
+          where: { computerId_botId: { computerId: bot.computerId!, botId: bot.id } },
+        });
+        expect(second.expiresAt.getTime()).toBeLessThan(Date.now());
+        expect(second.fence).toBeGreaterThan(first.fence);
+        expect(park).toHaveBeenCalledTimes(2);
+        expect(park.mock.calls[0]?.[1]).toMatchObject({
+          botId: bot.id,
+          screenLeaseId: `${seeded.run.id}:${first.fence}`,
+        });
+        expect(park.mock.calls[1]?.[1]).toMatchObject({
+          botId: bot.id,
+          screenLeaseId: `${next.id}:${second.fence}`,
+        });
+        expect(release).not.toHaveBeenCalled();
+      } finally {
+        delete handles.sandbox.parkScreen;
+        release.mockRestore();
+      }
+    },
+  );
+
+  it("keeps the screen through login takeover and parks only after handback completes", async () => {
+    const seeded = await seedRun("park-takeover", "sign in to the fixture");
+    const park = vi.fn().mockResolvedValue(undefined);
+    const release = vi.spyOn(handles.sandbox, "releaseScreen");
+    handles.sandbox.parkScreen = park;
+    try {
+      await handles.executor.continueRun(seeded.run.id, "login-worker");
+      expect(
+        await handles.prisma.run.findUniqueOrThrow({ where: { id: seeded.run.id } }),
+      ).toMatchObject({ status: "waiting_takeover" });
+      expect(park).not.toHaveBeenCalled();
+      expect(release).not.toHaveBeenCalled();
+      await rpc(seeded.cookie, "computer/takeover", { botId: seeded.bot.id });
+      await rpc(seeded.cookie, "computer/release", { botId: seeded.bot.id });
+      await handles.executor.continueRun(seeded.run.id, "resume-worker");
+      expect(
+        await handles.prisma.run.findUniqueOrThrow({ where: { id: seeded.run.id } }),
+      ).toMatchObject({ status: "completed" });
+      expect(park).toHaveBeenCalledOnce();
+      expect(release).not.toHaveBeenCalled();
+    } finally {
+      delete handles.sandbox.parkScreen;
+      release.mockRestore();
+    }
   });
 
   it("allows only one worker to claim a queued run", async () => {
