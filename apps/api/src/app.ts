@@ -4,6 +4,7 @@ import { ORPCError, onError } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
 import type {
   AgentRuntime,
+  BrowserProvider,
   JobPublisher,
   ManagedConnectorProvider,
   MessagingSurface,
@@ -56,6 +57,7 @@ import {
   pipedreamConfigFromEnv,
   piSessionsRoot,
   pushTokenPath,
+  reconcileAgentBuilds,
   reconcileCloudAgents,
   reconcileComputerUpdates,
   removePiUserSessions,
@@ -145,6 +147,7 @@ export async function createApp(
     prisma?: PrismaClient;
     realtime?: RealtimeFanout;
     sandbox?: SandboxProvider;
+    browser?: BrowserProvider;
     composio?: ComposioProvider;
     pipedream?: ManagedConnectorProvider;
     messaging?: MessagingSurface;
@@ -157,6 +160,7 @@ export async function createApp(
     prisma: prismaOverride,
     realtime: realtimeOverride,
     sandbox: sandboxOverride,
+    browser: browserOverride,
     composio: composioOverride,
     pipedream: pipedreamOverride,
     messaging: messagingOverride,
@@ -399,6 +403,7 @@ export async function createApp(
     runtime,
     codexCatalog,
     sandbox,
+    browser: browserOverride,
     memory,
     memoryProviders,
     home,
@@ -460,6 +465,7 @@ export async function createApp(
         jobs,
         reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
         reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
+        reconcileAgentBuilds: () => reconcileAgentBuilds({ prisma, jobs }),
       })
     : undefined;
   reconciler?.start();

@@ -99,6 +99,23 @@ export function createBackgroundJobHandlers(deps: {
       );
     },
     "history.compact": async (payload) => {
+      // Build packages have their own bounded context; never launch an unmetered summarizer.
+      if (
+        deps.prisma.buildParticipant &&
+        (await deps.prisma.buildParticipant.count({
+          where: {
+            botId: {
+              in: (
+                await deps.prisma.bot.findMany({
+                  where: { thread: { id: payload.threadId } },
+                  select: { id: true },
+                })
+              ).map((bot) => bot.id),
+            },
+          },
+        }))
+      )
+        return;
       await compactHistory(
         {
           prisma: deps.prisma,

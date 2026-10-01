@@ -64,6 +64,42 @@ describe("Docker sandbox", () => {
     });
   });
 
+  it("routes a delegated browser to its owner screen without changing the computer or caller identity", async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+      Response.json({
+        ok: true,
+        url: "https://fixture.example",
+        title: "Fixture",
+        tree: "",
+        elements: [],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new DockerSandboxProvider("http://supervisor.test", "test-token");
+    const delegated = {
+      ...context,
+      botId: "specialist",
+      screenBotId: "browser-owner",
+      screenLeaseId: "specialist-run:9",
+    };
+    const computer = {
+      id: "computer",
+      botId: "team-home",
+      kind: "docker" as const,
+      providerRef: "computer",
+    };
+    await provider.pageBrowser(computer, { command: "snapshot" }, delegated);
+    await provider.parkScreen(computer, delegated);
+    for (const call of fetchMock.mock.calls)
+      expect(call[1]?.headers).toMatchObject({
+        "x-rakazo-bot-id": "team-home",
+        "x-rakazo-screen-id": "browser-owner",
+        "x-rakazo-screen-lease-id": "specialist-run:9",
+      });
+    expect(delegated.botId).toBe("specialist");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/screen/park");
+  });
+
   it("rejects a declared oversized success response without buffering it", async () => {
     const cancel = vi.fn();
     vi.stubGlobal(

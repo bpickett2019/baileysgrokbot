@@ -90,6 +90,7 @@ async function main() {
 
     if (integration) {
       const suites = [
+        "packages/testkit/src/agent-builds.postgres.test.ts",
         "packages/testkit/src/pi-offline.postgres.test.ts",
         "packages/testkit/src/computer-approval.postgres.test.ts",
         "packages/testkit/src/eval-history.postgres.test.ts",
@@ -129,7 +130,9 @@ async function main() {
         if (result.exitCode !== 0)
           throw new Error("Isolated integration database operation failed");
       };
-      for (const [index, suite] of suites.entries()) {
+      const selectedSuites = e2eSpec ? suites.filter((suite) => suite.endsWith(e2eSpec)) : suites;
+      if (!selectedSuites.length) throw new Error("No integration suite matches --spec.");
+      for (const [index, suite] of selectedSuites.entries()) {
         const database = `integration_${index}`;
         await databaseCommand(`CREATE DATABASE "${database}" TEMPLATE "${template}"`);
         const suiteUrl = new URL(databaseUrl);

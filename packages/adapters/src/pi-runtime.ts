@@ -29,12 +29,14 @@ import type {
   AgentToolCompletion,
   AgentToolExecutionResult,
   ConnectorTool,
+  ModelCallGuard,
 } from "@rakazo/adapter-kit";
 import { usableModelId } from "@rakazo/contracts";
 import { getLogger } from "@rakazo/logging";
 import { isToolPauseResult } from "./approval-effect.js";
 import { builtinAgentTools, DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
+import { guardedModelStream } from "./guarded-model-stream.js";
 import {
   normalizeOpenAiToolParameters,
   openAiToolParametersNeedNormalization,
@@ -275,13 +277,18 @@ export class PiAgentRuntime implements AgentRuntime {
               options,
               request.model.maxTokens,
               () => selectedModel.credentials?.accessToken ?? apiKey,
+              request.modelCallGuard,
             ),
           getApiKey: async () => apiKey,
+          // Bounded build packages keep an append-only prompt prefix. Rolling pruning
+          // changes old cache blocks; the guard stops oversized packages before dispatch.
           transformContext: async (messages) =>
-            pruneComputerScreenshotContext(
-              pruneStalePageStateContext(messages),
-              request.model.maxImagesPerPrompt,
-            ),
+            request.modelCallGuard
+              ? messages
+              : pruneComputerScreenshotContext(
+                  pruneStalePageStateContext(messages),
+                  request.model.maxImagesPerPrompt,
+                ),
           prepareNextTurnWithContext: async () => {
             if (!request.claimSteering) return undefined;
             const steering = await request.claimSteering([...seenSteeringIds]);
@@ -1107,6 +1114,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
         options,
         requestModel.maxTokens,
         () => selectedModel.credentials?.accessToken ?? selectedModel.apiKey,
+        host.request.modelCallGuard,
       ),
     getApiKey: async () => selectedModel.apiKey,
     transformContext: async (messages) =>
@@ -2083,7 +2091,37 @@ export function reliableModelStream(
   options: ModelsSimpleStreamOptions | undefined,
   configuredMaxTokens: number | undefined,
   accessToken?: string | (() => string | undefined),
+  guard?: ModelCallGuard,
 ): AssistantMessageEventStream {
+  if (guard)
+    return guardedModelStream(
+      guard,
+      // A smaller local compaction/context setting is not a server-side token bound.
+      {
+        ...model,
+        contextWindow: Math.max(
+          model.contextWindow,
+          builtinModels().getModel(model.provider, model.id)?.contextWindow ?? 0,
+        ),
+      },
+      context,
+      resolveCompletionMaxTokens(
+        model.maxTokens,
+        configuredMaxTokens,
+        options?.maxTokens,
+        model.reasoning,
+      ),
+      options?.signal,
+      () =>
+        reliableModelStream(
+          models,
+          model,
+          context,
+          { ...options, maxRetries: 0 },
+          configuredMaxTokens,
+          accessToken,
+        ),
+    );
   const watchdog = isCodexModel(model) ? codexStreamIdleWatchdog(options?.signal) : undefined;
   try {
     const stream = models.streamSimple(

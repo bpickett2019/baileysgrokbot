@@ -7,6 +7,7 @@ import {
   ATTACHMENT_MAX_BASE64_LENGTH,
   ATTACHMENT_MAX_COUNT,
 } from "./attachments.js";
+import { BuildManifest, BuildSummary, BuildView } from "./builds.js";
 import {
   ActionApprovalRuleSchema,
   ActionAutoReviewSettingsSchema,
@@ -150,6 +151,22 @@ const threadSendInput = threadTarget
   });
 
 export const appContract = {
+  builds: {
+    list: oc.input(z.object({})).output(z.array(BuildSummary)),
+    get: oc.input(z.object({ id: Id })).output(BuildView),
+    create: oc.input(BuildManifest).output(BuildView),
+    start: oc.input(z.object({ id: Id })).output(BuildView),
+    review: oc
+      .input(
+        z.object({
+          id: Id,
+          action: z.enum(["pause", "verify", "retry", "resume", "release"]),
+          packageKey: z.string().max(64).optional(),
+          note: z.string().min(1).max(2000),
+        }),
+      )
+      .output(BuildView),
+  },
   aiConsent: {
     status: oc.input(AiConsentQuerySchema).output(AiConsentStatusSchema),
     allow: oc

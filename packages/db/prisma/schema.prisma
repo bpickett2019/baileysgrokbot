@@ -22,6 +22,7 @@ model AiDataConsent {
 }
 
 model User {
+  agentBuilds AgentBuild[]
   aiDataConsents AiDataConsent[]
   id                          String                       @id
   name                        String
@@ -161,6 +162,7 @@ model Member {
 }
 
 model Space {
+  agentBuilds AgentBuild[]
   aiDataConsents AiDataConsent[]
   id                          String                       @id
   organizationId              String
@@ -347,6 +349,7 @@ model Bot {
   title             String            @default("")
   description       String            @default("")
   instructions      String            @default("")
+  delegationOnly    Boolean           @default(false)
   color             String
   notifyOnFinish    Boolean           @default(true)
   pinned            Boolean           @default(false)
@@ -592,6 +595,9 @@ model Run {
   usageRecords         UsageRecord[]
   steeringMessages     SteeringMessage[]
   externalMessage      ExternalMessage?
+  buildPackageId       String?
+  buildPackage         BuildWorkPackage? @relation(fields: [buildPackageId], references: [id], onDelete: SetNull)
+  buildPhase           String?
 
   @@unique([spaceId, clientNonce])
   @@index([status, leaseExpiresAt])
@@ -988,6 +994,131 @@ model Artifact {
   @@index([rootArtifactId])
   // artifacts_family_version_key is raw SQL: Prisma cannot express COALESCE indexes.
   @@map("artifacts")
+}
+
+// Build ledgers deliberately retain actor ids even if a bot/run is removed.
+model AgentBuild {
+  id String @id @default(cuid())
+  spaceId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  computerId String
+  coordinatorId String
+  browserOwnerId String
+  title String
+  manifest Json
+  status String @default("draft")
+  reason String?
+  finalVerification Boolean @default(false)
+  maxMicrousd Int
+  spentMicrousd Int @default(0)
+  reservedMicrousd Int @default(0)
+  maxInputTokens Int
+  maxOutputTokens Int
+  inputTokens Int @default(0)
+  outputTokens Int @default(0)
+  reservedInputTokens Int @default(0)
+  reservedOutputTokens Int @default(0)
+  modelCalls Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  packages BuildWorkPackage[]
+  participants BuildParticipant[]
+  calls BuildModelCall[]
+  reviews BuildReview[]
+  @@index([spaceId, userId, status])
+  @@index([userId])
+  @@map("agent_builds")
+}
+
+model BuildReview {
+  id String @id @default(cuid())
+  buildId String
+  build AgentBuild @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  userId String
+  action String
+  packageKey String?
+  note String
+  createdAt DateTime @default(now())
+  @@index([buildId, createdAt])
+  @@map("build_reviews")
+}
+
+model BuildParticipant {
+  botId String @id
+  buildId String
+  build AgentBuild @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  @@index([buildId])
+  @@map("build_participants")
+}
+
+model BuildWorkPackage {
+  id String @id @default(cuid())
+  buildId String
+  build AgentBuild @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  key String
+  title String
+  agentId String
+  verifierId String
+  definition Json
+  status String @default("ready")
+  activeRunId String?
+  phase String @default("execute")
+  receiptRunId String?
+  evidence Json?
+  reason String?
+  modelCalls Int @default(0)
+  toolCalls Int @default(0)
+  spentMicrousd Int @default(0)
+  reservedMicrousd Int @default(0)
+  attempt Int @default(0)
+  lastObservation String?
+  repeatedObservations Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  runs Run[]
+  calls BuildModelCall[]
+  apiCalls BuildApiCall[]
+  @@unique([buildId, key])
+  @@index([status, updatedAt])
+  @@map("build_work_packages")
+}
+
+model BuildApiCall {
+  id String @id @default(cuid())
+  packageId String
+  package BuildWorkPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  phase String
+  stepId String
+  runId String
+  state String @default("executing")
+  createdAt DateTime @default(now())
+  completedAt DateTime?
+  @@unique([packageId, phase, stepId])
+  @@map("build_api_calls")
+}
+
+model BuildModelCall {
+  id String @id
+  buildId String
+  build AgentBuild @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  packageId String
+  package BuildWorkPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  runId String
+  provider String
+  model String
+  state String @default("reserved")
+  rates Json
+  reservedMicrousd Int
+  reservedInputTokens Int
+  reservedOutputTokens Int
+  spentMicrousd Int?
+  usage Json?
+  createdAt DateTime @default(now())
+  settledAt DateTime?
+  @@index([buildId, state])
+  @@map("build_model_calls")
 }
 
 model UsageRecord {

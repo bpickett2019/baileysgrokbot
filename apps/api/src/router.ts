@@ -31,9 +31,11 @@ import type {
 } from "@rakazo/adapters";
 import {
   acquireComputerExecutionLease,
+  agentBuildView,
   applyCodexLiveCatalog,
   applyTeachingDesktopInput,
   archiveBot,
+  assertBuildControlTarget,
   assertSafeRemoteUrl,
   buildMcpCredentialBlob,
   buildModelConnectPlaintext,
@@ -48,6 +50,7 @@ import {
   computerSupportsTerminal,
   computerSupportsUpdate,
   computerUpdateView,
+  createAgentBuild,
   createVoiceProvider,
   defaultCatalogModelId,
   deletePushToken,
@@ -62,6 +65,7 @@ import {
   isSandboxGoneError,
   isScratchpadStatus,
   kickModelCredentialRefresh,
+  listAgentBuilds,
   listAvailablePiCatalog,
   listPiCatalog,
   listScratchpadItems,
@@ -84,6 +88,7 @@ import {
   resolveBotUploadPath,
   resolveBotWorkspaceCwd,
   resolveBotWorkspacePath,
+  reviewAgentBuild,
   revokeScreenControl,
   sanitizeComposioError,
   savePushToken,
@@ -93,6 +98,7 @@ import {
   scriptedCatalogEntry,
   selectDefaultCredentialId,
   serializeModelSecret,
+  startAgentBuild,
   takeoverLeaseMs,
   toComputerRef,
   touchRunningComputer,
@@ -654,6 +660,28 @@ export function createRouter(deps: RouterDeps) {
   });
 
   return os.router({
+    builds: {
+      list: authed.builds.list.handler(({ context }) =>
+        listAgentBuilds(deps.prisma, context.actor),
+      ),
+      get: authed.builds.get.handler(({ context, input }) =>
+        agentBuildView(deps.prisma, context.actor, input.id),
+      ),
+      create: authed.builds.create.handler(async ({ context, input }) =>
+        agentBuildView(
+          deps.prisma,
+          context.actor,
+          await createAgentBuild(deps, context.actor, input),
+        ),
+      ),
+      start: authed.builds.start.handler(async ({ context, input }) => {
+        await startAgentBuild(deps, context.actor, input.id);
+        return agentBuildView(deps.prisma, context.actor, input.id);
+      }),
+      review: authed.builds.review.handler(({ context, input }) =>
+        reviewAgentBuild(deps, context.actor, input),
+      ),
+    },
     aiConsent: {
       status: authed.aiConsent.status.handler(({ context, input }) =>
         aiConsentStatus(deps, context.actor, input),
@@ -2302,6 +2330,7 @@ export function createRouter(deps: RouterDeps) {
         return { ok: true as const };
       }),
       takeover: authed.computer.takeover.handler(async ({ context, input }) => {
+        await assertBuildControlTarget(deps.prisma, context.actor, input.botId);
         let bot = await repos.getBot(context.actor, input.botId);
         if (!bot.computer?.providerRef || bot.computer.state !== "running") {
           throw new ORPCError("BAD_REQUEST", { message: "computer must be running" });

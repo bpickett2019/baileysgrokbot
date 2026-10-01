@@ -37,6 +37,7 @@ import {
   PipedreamConnector,
   PostgresRealtimeFanout,
   pipedreamConfigFromEnv,
+  reconcileAgentBuilds,
   reconcileCloudAgents,
   reconcileComputerUpdates,
   resolveDeploymentModel,
@@ -244,6 +245,7 @@ async function main() {
     leadership: createPostgresReconciliationLeadership(pool),
     reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
     reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
+    reconcileAgentBuilds: () => reconcileAgentBuilds({ prisma, jobs }),
   });
   reconciler.start();
 

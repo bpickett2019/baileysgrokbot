@@ -13,6 +13,7 @@ import type {
   TerminalRequest,
 } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
+import { withBuildScreenRouting } from "./agent-builds.js";
 import { DesktopSandboxProvider } from "./desktop-sandbox.js";
 import { createSandboxProvider, type SandboxProviderOptions } from "./sandbox-factory.js";
 
@@ -32,19 +33,23 @@ export function createRunSandbox(
     });
   }
   const primary = createSandboxProvider(kind, opts);
-  if (kind !== "docker" || !opts.prisma) return primary;
-  return new HostAwareSandbox(
-    primary,
-    new DesktopSandboxProvider({
-      root: opts.dataDir,
-      hostRoots: [homedir()],
-    }),
-    async () => {
-      const settings = await opts.prisma!.deploymentSettings.findUnique({
-        where: { id: "default" },
-      });
-      return settings?.computerHost === "this-mac";
-    },
+  if (kind !== "docker" || !opts.prisma)
+    return opts.prisma ? withBuildScreenRouting(primary, opts.prisma) : primary;
+  return withBuildScreenRouting(
+    new HostAwareSandbox(
+      primary,
+      new DesktopSandboxProvider({
+        root: opts.dataDir,
+        hostRoots: [homedir()],
+      }),
+      async () => {
+        const settings = await opts.prisma!.deploymentSettings.findUnique({
+          where: { id: "default" },
+        });
+        return settings?.computerHost === "this-mac";
+      },
+    ),
+    opts.prisma,
   );
 }
 

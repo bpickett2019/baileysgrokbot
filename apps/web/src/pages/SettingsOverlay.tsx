@@ -10,6 +10,7 @@ import {
   UpdatesSettingsPanel,
   UsageSettingsPanel,
 } from "./AccountSettingsOverlay";
+import { BuildSettingsPanel } from "./BuildSettingsPanel";
 import { MemorySettingsOverlay } from "./MemorySettingsOverlay";
 import { ModelSettingsOverlay } from "./ModelSettingsOverlay";
 import { VoiceSettingsOverlay } from "./VoiceSettingsOverlay";
@@ -20,6 +21,7 @@ export type SettingsSection =
   | "memory"
   | "voice"
   | "usage"
+  | "builds"
   | "computer"
   | "updates";
 
@@ -85,6 +87,7 @@ export function SettingsOverlay({
     { id: "memory", label: t`Memory`, icon: Brain },
     { id: "voice", label: t`Voice`, icon: Volume2 },
     { id: "usage", label: t`Usage`, icon: Gauge },
+    { id: "builds", label: t`Builds`, icon: Gauge },
     ...(showComputer ? [{ id: "computer" as const, label: t`Computer`, icon: Monitor }] : []),
     { id: "updates", label: t`Updates`, icon: CloudDownload },
   ];
@@ -210,6 +213,7 @@ export function SettingsOverlay({
               {section === "usage" ? (
                 <UsageSettingsPanel usage={usage} panelRef={usageRef} />
               ) : null}
+              {section === "builds" ? <BuildSettingsPanel onOpenAgent={requestClose} /> : null}
               {section === "computer" && showComputer ? <ComputerSettingsPanel /> : null}
               {section === "updates" ? (
                 <UpdatesSettingsPanel isDeploymentOwner={isDeploymentOwner} />

@@ -304,8 +304,8 @@ export class PageBrowserSessionStore {
  */
 export function pageBrowserSessionKey(
   computer: { id: string; botId: string },
-  context?: { botId?: string },
+  context?: { botId?: string; screenBotId?: string },
 ): string {
-  const bot = context?.botId?.trim() || computer.botId;
+  const bot = context?.screenBotId?.trim() || context?.botId?.trim() || computer.botId;
   return `${computer.id}::${bot}`;
 }

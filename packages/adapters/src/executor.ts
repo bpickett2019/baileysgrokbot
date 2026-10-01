@@ -9,6 +9,7 @@ import type {
   ArtifactStore,
   AutoReviewProvider,
   BrowserProvider,
+  BrowserSnapshotResult,
   ComputerRef,
   ConnectorCall,
   ConnectorProvider,
@@ -111,6 +112,22 @@ import {
 import { getLogger } from "@rakazo/logging";
 import { parse as parseShellCommand } from "shell-quote";
 import {
+  agentBuildView,
+  assertBuildTarget,
+  authorizeBuildTool,
+  BUILD_BROWSER_TOOLS,
+  BUILD_EXECUTION_INSTRUCTIONS,
+  buildObservationFingerprint,
+  buildPackagePrompt,
+  buildRunScope,
+  finishBuildRun,
+  handleBuildAdministrativeRun,
+  noteBuildObservation,
+  pauseExpiredBrowserBuildRun,
+  serializeBuildToolCalls,
+  verifyBuildSnapshot,
+} from "./agent-builds.js";
+import {
   connectAgent,
   messageConnectedAgent,
   respondAgentConnection,
@@ -175,6 +192,8 @@ import {
   browserNavigateFromTool,
   browserSnapshotFromTool,
 } from "./browser-tools.js";
+import { executeBuildApiRun } from "./build-api-executor.js";
+import { createBuildModelGuard } from "./build-budget.js";
 import { agentConnectionTools, builtinAgentTools } from "./builtin-tools.js";
 import { archiveSpawnedBot, spawnBot } from "./child-bots.js";
 import { type CloudAgentConnection, cloudAgentsEnabled } from "./cloud-agent-factory.js";
@@ -1138,6 +1157,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
       const run = await deps.prisma.run.findUnique({ where: { id: runId } });
       if (!run) return;
       if (isTerminal(run.status as RunStatus)) return;
+      if (
+        deps.prisma.buildParticipant &&
+        (await handleBuildAdministrativeRun(deps, runId, workerId))
+      )
+        return;
+      if (run.buildPackageId && (await executeBuildApiRun(deps, runId, workerId))) return;
+      const buildScope = run.buildPackageId ? await buildRunScope(deps.prisma, runId) : null;
+      if (buildScope && (await pauseExpiredBrowserBuildRun(deps, buildScope, workerId))) return;
       let { resumeCheckpoint, heldForTakeover, resumeHeldLease, takeoverResume } =
         takeoverContinuePlan(run);
 
@@ -1190,6 +1217,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         return;
       }
       let computerLease: ComputerExecutionLease | null = null;
+      let buildBrowserLease: ComputerExecutionLease | null = null;
       try {
         computerLease = await acquireComputerExecutionLease(deps.prisma, {
           computerId: leaseTarget.computerId,
@@ -1197,7 +1225,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
           botId: run.botId,
           resumeHeldLease,
         });
+        if (buildScope && buildScope.build.computerId !== leaseTarget.computerId)
+          throw new Error("Build computer changed; review the manifest.");
+        if (buildScope && buildScope.build.browserOwnerId !== run.botId) {
+          buildBrowserLease = await acquireComputerExecutionLease(deps.prisma, {
+            computerId: leaseTarget.computerId,
+            runId,
+            botId: buildScope.build.browserOwnerId,
+            resumeHeldLease,
+          });
+        }
       } catch (error) {
+        await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
         if (!(error instanceof ComputerBusyError)) throw error;
         await requeueComputerRun(deps, runId, workerId, fence, resumeCheckpoint, heldForTakeover);
         return;
@@ -1208,6 +1247,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         })
         .catch(async (error) => {
           await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
+          await releaseComputerExecutionLease(deps.prisma, buildBrowserLease).catch(
+            () => undefined,
+          );
           throw error;
         });
 
@@ -1222,9 +1264,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         void Promise.all([
           renewRunLease(deps, runId, workerId, fence),
           renewComputerExecutionLease(deps.prisma, computerLease),
+          renewComputerExecutionLease(deps.prisma, buildBrowserLease),
         ])
-          .then(([runRenewed, computerRenewed]) => {
-            if (!runRenewed || !computerRenewed) {
+          .then(([runRenewed, computerRenewed, browserRenewed]) => {
+            if (!runRenewed || !computerRenewed || !browserRenewed) {
               leaseValid = false;
               runAbortController?.abort();
             }
@@ -1286,7 +1329,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }),
           findDefaultModelCredential(deps.prisma, run),
           deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
-          deps.memoryProviders.resolve(run.spaceId),
+          buildScope ? Promise.resolve(null) : deps.memoryProviders.resolve(run.spaceId),
           deps.prisma.taughtSkill.findMany({
             where: { botId: run.botId, spaceId: run.spaceId, status: "saved" },
           }),
@@ -1341,7 +1384,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           userId: run.userId,
           botId: bot.id,
           runId,
-          screenLeaseId: screenLeaseIdForRun(computerLease, runId, fence),
+          screenLeaseId: screenLeaseIdForRun(buildBrowserLease ?? computerLease, runId, fence),
+          ...(buildScope ? { screenBotId: buildScope.build.browserOwnerId } : {}),
           signal: runAbortController.signal,
           connectedConnections: connectedPlugins.map((row) => ({
             id: row.id,
@@ -1366,9 +1410,35 @@ export function createRunExecutor(deps: ExecutorDeps) {
           payload: { trigger: run.trigger, routineId: run.routineId },
         });
 
-        const discoveredPromise = deps.connector
-          ? deps.connector.discoverTools(context)
-          : Promise.resolve([]);
+        if (buildScope) {
+          const ids = [
+            ...new Set([
+              buildScope.build.browserOwnerId,
+              buildScope.build.coordinatorId,
+              ...buildScope.manifest.packages.flatMap((packet) => [
+                packet.agentId,
+                packet.verifierId,
+              ]),
+            ]),
+          ].filter((id) => id !== run.botId);
+          const viewers = await deps.prisma.bot.findMany({
+            where: { id: { in: ids }, spaceId: run.spaceId, userId: run.userId },
+            select: { id: true, thread: { select: { id: true } } },
+          });
+          for (const viewer of viewers)
+            if (viewer.thread)
+              await deps.events.append({
+                spaceId: run.spaceId,
+                threadId: viewer.thread.id,
+                botId: viewer.id,
+                type: "computer.status",
+                payload: { buildAgentId: run.botId },
+              });
+        }
+        const discoveredPromise =
+          deps.connector && !buildScope
+            ? deps.connector.discoverTools(context)
+            : Promise.resolve([]);
         const threadContext = threadContextForRun(
           run.trigger,
           {
@@ -1693,7 +1763,25 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // The intro turn confirms how a bot read its own role before anyone hands it
         // real work — it must not be able to act on that reading (shell, computer,
         // scheduling, spawning another bot, ...) before the user has assigned any task.
-        const tools = run.trigger === "created" ? [] : [...builtins, ...exposedConnectorTools];
+        const tools =
+          run.trigger === "created"
+            ? []
+            : buildScope
+              ? [
+                  ...builtins.filter((tool) => BUILD_BROWSER_TOOLS.has(tool.name)),
+                  {
+                    name: "build_verify",
+                    description:
+                      "Reload the approved read-back URL and verify the package's exact saved field values. Required before completing a package.",
+                    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+                  },
+                  {
+                    name: "build_status",
+                    description: "Read build progress and the shared usage ledger.",
+                    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+                  },
+                ]
+              : [...builtins, ...exposedConnectorTools];
         const taskCatalogInstruction = tools.some((tool) => tool.name === "task_catalog")
           ? TASK_CATALOG_GUIDANCE
           : undefined;
@@ -1855,12 +1943,89 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return occurrence;
         };
 
-        const applyTool = async (
+        let lastBuildSnapshot: BrowserSnapshotResult | undefined;
+        const applyToolUnserialized = async (
           name: string,
           args: Record<string, unknown>,
           executionId: string,
         ) => {
           context.signal.throwIfAborted();
+          if (bot.delegationOnly) throw new Error("Coordinators must delegate execution.");
+          if (buildScope) {
+            await authorizeBuildTool(deps.prisma, runId, name, { fence, owner: workerId });
+            if (name === "build_status")
+              return agentBuildView(deps.prisma, run, buildScope.build.id);
+            if (name === "build_verify") {
+              lastBuildSnapshot = undefined;
+              await deps.prisma.buildWorkPackage.update({
+                where: { id: buildScope.packet.id },
+                data: { receiptRunId: null },
+              });
+              const url = buildScope.definition.readbackUrl ?? buildScope.manifest.targetUrl;
+              await browser.navigate(computer, { url }, context);
+              const snapshot = await browser.snapshot(computer, {}, context);
+              return verifyBuildSnapshot(deps.prisma, runId, snapshot);
+            }
+            if (
+              name === "browser_navigate" &&
+              new URL(String(args.url)).origin !== new URL(buildScope.manifest.targetUrl).origin
+            )
+              throw new Error("Navigation outside the approved build origin is blocked.");
+            if (name === "browser_act") {
+              if (run.buildPhase === "verify")
+                throw new Error("Verification is read-only. Use the approved read-back URL.");
+              const snapshot = await browser.snapshot(computer, {}, context);
+              assertBuildTarget(buildScope.manifest, snapshot);
+              const actions = args.actions as Array<{ kind: string; ref?: string; text?: string }>;
+              if (!Array.isArray(actions)) throw new Error("Invalid build actions.");
+              if (
+                actions.some(
+                  (action, index) => action.kind === "click" && index !== actions.length - 1,
+                )
+              )
+                throw new Error(
+                  "Navigation and save clicks must end a batch. Observe again before continuing.",
+                );
+              for (const action of actions) {
+                const observed = lastBuildSnapshot?.elements.find(
+                  (node) => node.ref === action.ref,
+                );
+                const candidates = observed
+                  ? snapshot.elements.filter(
+                      (node) => node.role === observed.role && node.name === observed.name,
+                    )
+                  : [];
+                const element = candidates.length === 1 ? candidates[0] : undefined;
+                if (
+                  !element ||
+                  /\\b(delete|remove|trash|publish|go live|activate|launch|send|schedule|clone)\\b/i.test(
+                    element.name,
+                  )
+                )
+                  throw new Error("This build action is blocked.");
+                if (
+                  action.kind === "fill" &&
+                  !buildScope.definition.checks.some(
+                    (check) => check.label === element.name && check.expected === action.text,
+                  )
+                )
+                  throw new Error("Field edit does not match the approved package.");
+                if (
+                  action.kind === "click" &&
+                  !buildScope.definition.allowedClicks.includes(element.name)
+                )
+                  throw new Error("This click was not approved in the package.");
+                if (!["click", "fill"].includes(action.kind))
+                  throw new Error("Only approved field replacement and clicks are allowed.");
+                action.ref = element.ref;
+              }
+              lastBuildSnapshot = undefined;
+              await deps.prisma.buildWorkPackage.update({
+                where: { id: buildScope.packet.id },
+                data: { receiptRunId: null },
+              });
+            }
+          }
           if (handedOff) {
             return { error: "This stage was handed off. End the turn without more tool calls." };
           }
@@ -2084,11 +2249,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 readOnly: declaredReadOnly,
                 rules: await loadApprovalRules(),
               });
-          const autoReviewPref = requiresMandatoryApproval
-            ? false
-            : await loadAutoReviewPreference();
-          const injectedReview = requiresMandatoryApproval ? undefined : deps.autoReview;
-          const checker = requiresMandatoryApproval ? undefined : resolveAutoReviewChecker();
+          const autoReviewPref =
+            requiresMandatoryApproval || buildScope ? false : await loadAutoReviewPreference();
+          const injectedReview =
+            requiresMandatoryApproval || buildScope ? undefined : deps.autoReview;
+          const checker =
+            requiresMandatoryApproval || buildScope ? undefined : resolveAutoReviewChecker();
           const checkerConfigured =
             autoReviewPref &&
             (Boolean(injectedReview) ||
@@ -2873,30 +3039,32 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 : name === "browser_snapshot"
                   ? browserSnapshotFromTool
                   : null;
-            return computerScreenToolResult(
-              async () =>
-                tool
-                  ? redactConnectorPayload(
-                      await tool(browser, computer, context, args),
-                      redactions(),
-                    )
-                  : browserActFromTool(browser, computer, context, args, {
-                      redactions,
-                      resolveSecretFill: async (step) => {
-                        const resolved = await resolveLoginFill({
-                          prisma: deps.prisma,
-                          secretStore: deps.secretStore,
-                          scope: run,
-                          name: step.secret,
-                          field: step.field,
-                        });
-                        if ("error" in resolved) return resolved;
-                        registerRunSecrets(resolved.redactions);
-                        return { text: resolved.text, origin: resolved.origin };
-                      },
-                    }),
-              finish,
-            );
+            return computerScreenToolResult(async () => {
+              if (tool) {
+                const result = await tool(browser, computer, context, args);
+                if (buildScope)
+                  lastBuildSnapshot =
+                    name === "browser_snapshot" && "elements" in result
+                      ? (result as BrowserSnapshotResult)
+                      : undefined;
+                return redactConnectorPayload(result, redactions());
+              }
+              return browserActFromTool(browser, computer, context, args, {
+                redactions,
+                resolveSecretFill: async (step) => {
+                  const resolved = await resolveLoginFill({
+                    prisma: deps.prisma,
+                    secretStore: deps.secretStore,
+                    scope: run,
+                    name: step.secret,
+                    field: step.field,
+                  });
+                  if ("error" in resolved) return resolved;
+                  registerRunSecrets(resolved.redactions);
+                  return { text: resolved.text, origin: resolved.origin };
+                },
+              });
+            }, finish);
           }
 
           if (name.startsWith("cloud_agent_")) {
@@ -3881,6 +4049,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           return finish({ error: `unknown tool ${name}` });
         };
+        const applyTool = buildScope
+          ? serializeBuildToolCalls(applyToolUnserialized)
+          : applyToolUnserialized;
 
         const pluginLine =
           connectedPlugins.length > 0
@@ -3923,6 +4094,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
           { exposedToolNames: new Set(tools.map((tool) => tool.name)) },
         );
         const replyContext = await loadReplyContext(deps.prisma, thread.id, run.sourceMessageId);
+        const scopedBuildPrompt = buildScope
+          ? buildPackagePrompt(
+              buildScope.build.manifest,
+              buildScope.packet.definition,
+              run.buildPhase ?? "execute",
+            )
+          : undefined;
         const prompt = [
           replyContext,
           basePrompt,
@@ -4029,34 +4207,49 @@ export function createRunExecutor(deps: ExecutorDeps) {
               threadId: thread.id,
               runId,
               sourceMessageId: run.sourceMessageId,
-              prompt,
-              instructions: userTurnInstructions({
-                browserInstruction: browser.instructions,
-                botInstructions: runIdentityInstruction(bot, run.trigger),
-                groupContext,
-                messagingContext,
-                redactedMemoryContext: memoryContext
-                  ? redactSecrets(memoryContext, runSecrets)
-                  : undefined,
-                redactedScratchpadContext: scratchpadContext
-                  ? redactSecrets(scratchpadContext, runSecrets)
-                  : undefined,
-                hasHistoricalContext: historicalContext.length > 0,
-                computerInstruction,
-                pageBrowserAllowed,
-                taskCatalogInstruction,
-                workspaceInstruction,
-                agentEnvironmentInstruction,
-                botDirectory,
-                pluginLine,
-                agentSkillsLine,
-                taughtSkillsLine,
-                replyGuidance: runReplyGuidance(run.trigger),
-              })
-                .filter((instruction): instruction is string => Boolean(instruction))
-                .join("\n\n"),
-              history: runtimeHistory,
-              currentTurnImages,
+              prompt: scopedBuildPrompt
+                ? JSON.stringify({
+                    ...JSON.parse(scopedBuildPrompt),
+                    operatorClarification:
+                      task.prompt !== scopedBuildPrompt
+                        ? redactSecrets(task.prompt, runSecrets).slice(0, 4000)
+                        : undefined,
+                    takeoverNote: takeoverResume?.promptNote,
+                    approvalNote: approvalContinuation,
+                  })
+                : prompt,
+              instructions: buildScope
+                ? BUILD_EXECUTION_INSTRUCTIONS
+                : userTurnInstructions({
+                    browserInstruction: browser.instructions,
+                    botInstructions: runIdentityInstruction(bot, run.trigger),
+                    groupContext,
+                    messagingContext,
+                    redactedMemoryContext: memoryContext
+                      ? redactSecrets(memoryContext, runSecrets)
+                      : undefined,
+                    redactedScratchpadContext: scratchpadContext
+                      ? redactSecrets(scratchpadContext, runSecrets)
+                      : undefined,
+                    hasHistoricalContext: historicalContext.length > 0,
+                    computerInstruction,
+                    pageBrowserAllowed,
+                    taskCatalogInstruction,
+                    workspaceInstruction,
+                    agentEnvironmentInstruction,
+                    botDirectory,
+                    pluginLine,
+                    agentSkillsLine,
+                    taughtSkillsLine,
+                    replyGuidance: runReplyGuidance(run.trigger),
+                  })
+                    .filter((instruction): instruction is string => Boolean(instruction))
+                    .join("\n\n"),
+              history: buildScope ? [] : runtimeHistory,
+              currentTurnImages: buildScope ? [] : currentTurnImages,
+              modelCallGuard: buildScope
+                ? await createBuildModelGuard(deps.prisma, runId)
+                : undefined,
               tools,
               model: {
                 provider: runModelProvider,
@@ -4064,7 +4257,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 apiKey: resolved.oauth ? undefined : resolved.apiKey,
                 baseUrl: resolved.baseUrl,
                 reasoning: resolved.reasoning,
-                maxTokens: resolved.maxTokens,
+                maxTokens: buildScope
+                  ? Math.min(
+                      resolved.maxTokens ?? buildScope.manifest.maxOutputPerCall,
+                      buildScope.manifest.maxOutputPerCall,
+                    )
+                  : resolved.maxTokens,
                 contextWindow: resolved.contextWindow,
                 acceptsImages: resolved.acceptsImages,
                 maxImagesPerPrompt: resolved.maxImagesPerPrompt,
@@ -4088,72 +4286,76 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     resolveConnectedModel(run, provider, modelId, (values) =>
                       runSecrets.push(...values),
                     ),
-              onToolCompleted: (completion) =>
-                appendToolCompletionAudit(
+              onToolCompleted: async (completion) => {
+                if (buildScope) {
+                  const frame =
+                    buildObservationFingerprint(completion.result) ??
+                    toolCompletionAuditPayload(completion).frameId;
+                  if (typeof frame === "string")
+                    await noteBuildObservation(deps.prisma, runId, frame);
+                }
+                await appendToolCompletionAudit(
                   deps,
-                  {
-                    spaceId: run.spaceId,
-                    threadId: thread.id,
-                    botId: bot.id,
-                    runId,
-                  },
+                  { spaceId: run.spaceId, threadId: thread.id, botId: bot.id, runId },
                   completion,
                   runSecrets,
-                ),
-              claimSteering: scripted
-                ? undefined
-                : async (seenIds) => {
-                    const steering = await deps.events.claimSteering({
-                      threadId: thread.id,
-                      botId: bot.id,
-                      runId,
-                      leaseOwner: workerId,
-                      leaseFence: fence,
-                      seenIds,
-                    });
-                    return Promise.all(
-                      steering.map(async (item) => {
-                        const { images, files, unavailableInstruction } =
-                          await settleSteeringAttachmentLoads(
-                            loadCurrentTurnImages(deps, item.blocks, context),
-                            deps.artifacts
-                              ? materializeCurrentTurnFiles(
-                                  {
-                                    prisma: deps.prisma,
-                                    artifacts: deps.artifacts,
-                                    sandbox: deps.sandbox,
-                                  },
-                                  item.blocks,
-                                  {
-                                    context,
-                                    computer,
-                                    computerMode,
-                                    markWorkspaceDirty: workspaceCheckpoint.markDirty,
-                                  },
-                                )
-                              : Promise.resolve([]),
-                            item.blocks,
-                            context.signal,
-                          );
-                        workspaceCheckpoint.markFiles(files);
-                        const filesInstruction = currentTurnFilesInstruction(files);
-                        return {
-                          id: item.id,
-                          messageId: item.messageId,
-                          historyText: item.text,
-                          text: [
-                            await loadReplyContext(deps.prisma, thread.id, item.messageId),
-                            item.text,
-                            filesInstruction,
-                            unavailableInstruction,
-                          ]
-                            .filter(Boolean)
-                            .join("\n\n"),
-                          images,
-                        };
-                      }),
-                    );
-                  },
+                );
+              },
+              claimSteering:
+                scripted || buildScope
+                  ? undefined
+                  : async (seenIds) => {
+                      const steering = await deps.events.claimSteering({
+                        threadId: thread.id,
+                        botId: bot.id,
+                        runId,
+                        leaseOwner: workerId,
+                        leaseFence: fence,
+                        seenIds,
+                      });
+                      return Promise.all(
+                        steering.map(async (item) => {
+                          const { images, files, unavailableInstruction } =
+                            await settleSteeringAttachmentLoads(
+                              loadCurrentTurnImages(deps, item.blocks, context),
+                              deps.artifacts
+                                ? materializeCurrentTurnFiles(
+                                    {
+                                      prisma: deps.prisma,
+                                      artifacts: deps.artifacts,
+                                      sandbox: deps.sandbox,
+                                    },
+                                    item.blocks,
+                                    {
+                                      context,
+                                      computer,
+                                      computerMode,
+                                      markWorkspaceDirty: workspaceCheckpoint.markDirty,
+                                    },
+                                  )
+                                : Promise.resolve([]),
+                              item.blocks,
+                              context.signal,
+                            );
+                          workspaceCheckpoint.markFiles(files);
+                          const filesInstruction = currentTurnFilesInstruction(files);
+                          return {
+                            id: item.id,
+                            messageId: item.messageId,
+                            historyText: item.text,
+                            text: [
+                              await loadReplyContext(deps.prisma, thread.id, item.messageId),
+                              item.text,
+                              filesInstruction,
+                              unavailableInstruction,
+                            ]
+                              .filter(Boolean)
+                              .join("\n\n"),
+                            images,
+                          };
+                        }),
+                      );
+                    },
             },
             context,
           );
@@ -4265,6 +4467,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
               return;
             } else if (event.type === "takeover") {
               if (!(await renewRunLease(deps, runId, workerId, fence))) return;
+              if (buildScope)
+                await deps.prisma.$transaction([
+                  deps.prisma.agentBuild.update({
+                    where: { id: buildScope.build.id },
+                    data: { finalVerification: false },
+                  }),
+                  deps.prisma.buildWorkPackage.update({
+                    where: { id: buildScope.packet.id },
+                    data: { receiptRunId: null },
+                  }),
+                ]);
               const safeReason = redactSecrets(event.reason, runSecrets);
               // Publish pending narration as tagged mid-turn progress so reconciliation
               // does not treat pre-takeover text as the delegated final result.
@@ -4293,7 +4506,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 { kind: "computer", state: "Needs you", text: safeReason },
               ]);
               await workspaceCheckpoint.flush();
-              if (!(await holdComputerExecutionLeaseForTakeover(deps.prisma, computerLease))) {
+              if (
+                !(await holdComputerExecutionLeaseForTakeover(deps.prisma, computerLease)) ||
+                !(await holdComputerExecutionLeaseForTakeover(deps.prisma, buildBrowserLease))
+              ) {
                 throw new Error("Computer lease expired before takeover");
               }
               const paused = await deps.events.pauseRunForTakeover({
@@ -4621,6 +4837,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           // the catch block below, where a second finalizeRun would match no rows and silently
           // skip the completion notification.
           try {
+            if (buildScope) return;
             const updatedThread = await deps.prisma.thread.findUniqueOrThrow({
               where: { id: thread.id },
               select: {
@@ -4742,10 +4959,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
               deps.sandbox,
               screenRelease.computer,
               screenRelease.context,
-              preserveScreen,
+              preserveScreen || Boolean(buildScope),
             ).catch((error) => getLogger().error("run screen cleanup failed", error));
           }
           await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
+          await releaseComputerExecutionLease(deps.prisma, buildBrowserLease).catch(
+            () => undefined,
+          );
         }
         await deps.prisma.attempt
           .updateMany({
@@ -4753,6 +4973,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             data: { status: "interrupted", finishedAt: new Date() },
           })
           .catch(() => undefined);
+        if (buildScope)
+          await finishBuildRun(deps, runId).catch((error) =>
+            getLogger().error("build progression failed", error),
+          );
       }
     },
   };

@@ -13,8 +13,14 @@ On a fresh instance, create/import the skills through the Skills interface and c
 bots using these definitions. Give Chief the orchestration runbook as standing guidance.
 With `BROWSER_PROVIDER=computer`, use `/cvent-team-browser` for Ego-inspired semantic
 observation, batched actions, and verification on the existing Team screen. The
-skill does not install Ego Lite or expose its JavaScript SDK. Each bot can have a
-different screen; keep the signed-in bot driving if specialists lack that session.
+skill does not install Ego Lite or expose its JavaScript SDK. Ordinary runs still have
+separate bot screens. Do not route editing back to Chief as a workaround: use the
+[experimental delegated-build executor](../delegated-builds.md) for an explicitly
+approved shared browser session, or pause. The profile may belong to Chief while
+specialists execute under their own identities. Importing these skills alone does
+not enable shared budgets, backend delegation restrictions, or automatic scheduling.
+Automatic workbook-to-manifest compilation remains unfinished; do not resume an
+unrestricted free-form Chief run as if it were a budgeted build.
 Importing this directory is not automatic; the current running instance already has
 these bots and skills stored in its local database.
 

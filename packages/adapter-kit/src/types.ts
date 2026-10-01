@@ -9,6 +9,8 @@ export interface AdapterContext {
   runId?: string;
   /** Opaque fence for releasing a graphical screen without tearing down its replacement. */
   screenLeaseId?: string;
+  /** Backend-authorized shared build browser identity; never supplied by a model. */
+  screenBotId?: string;
   /** When releasing a screen after cancel, also stop orphaned browser work on that screen. */
   cancelRunWork?: boolean;
   signal: AbortSignal;
@@ -404,6 +406,24 @@ export interface AgentRunModel {
   };
 }
 
+export interface ModelCallAccounting {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+export interface ModelCallGuard {
+  maxPromptChars: number;
+  reserve(input: {
+    provider: string;
+    model: string;
+    maxInputTokens: number;
+    maxOutputTokens: number;
+    rates: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  }): Promise<{ settle(usage: ModelCallAccounting | null): Promise<void> }>;
+}
+
 export interface AgentRunRequest {
   botId: string;
   threadId: string;
@@ -421,6 +441,8 @@ export interface AgentRunRequest {
   currentTurnImages?: AgentInputImage[];
   tools: ConnectorTool[];
   model: AgentRunModel;
+  /** Durable accounting before every model request. Unknown outcomes retain their reservation. */
+  modelCallGuard?: ModelCallGuard;
   /** Resolve an explicitly requested helper model within the active user and space scope. */
   resolveModel?: (provider: string, modelId: string) => Promise<AgentRunModel>;
   resumeFromCheckpoint?: string;

@@ -20,7 +20,7 @@ export class BrowserStoppedReleaseError extends Error {
 }
 
 export function screenSessionKey(context: AdapterContext): string {
-  return context.botId ?? "default";
+  return context.screenBotId ?? context.botId ?? "default";
 }
 
 export class SingleScreenClaimTracker {
