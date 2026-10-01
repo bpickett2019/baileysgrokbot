@@ -1,5 +1,52 @@
+import type { ProductEvent } from "@rakazo/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { embeddableScreenUrl, loadComputerScreen, screenIframeSandbox } from "./computer-screen";
+import {
+  computerScreenInvalidated,
+  embeddableScreenUrl,
+  loadComputerScreen,
+  screenIframeSandbox,
+} from "./computer-screen";
+
+function screenEvent(type: ProductEvent["type"], botId = "displayed-bot"): ProductEvent {
+  return {
+    id: "event-id",
+    spaceId: "space-id",
+    threadId: "thread-id",
+    botId,
+    seq: 1,
+    type,
+    payload: {},
+    runId: "run-id",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+}
+
+describe("computer screen authorization refresh", () => {
+  it.each([
+    "run.started",
+    "run.completed",
+    "run.cancelled",
+    "run.failed",
+    "run.waiting_input",
+    "computer.status",
+    "computer.takeover.requested",
+    "computer.takeover.granted",
+    "computer.takeover.released",
+  ] as const)("refreshes the displayed bot for %s, but not a different group member", (type) => {
+    expect(computerScreenInvalidated(screenEvent(type), "displayed-bot")).toBe(true);
+    expect(computerScreenInvalidated(screenEvent(type, "other-bot"), "displayed-bot")).toBe(false);
+    expect(computerScreenInvalidated(screenEvent(type))).toBe(false);
+  });
+
+  it.each([
+    "thread.progress",
+    "agent.tool.completed",
+    "thread.message.created",
+    "bot.updated",
+  ] as const)("does not rotate the screen on ordinary %s activity", (type) => {
+    expect(computerScreenInvalidated(screenEvent(type), "displayed-bot")).toBe(false);
+  });
+});
 
 describe("computer screen requests", () => {
   it("shows connection failures and lets a successful retry clear them", async () => {

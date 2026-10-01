@@ -176,6 +176,7 @@ import {
 import { startCall, useCallSession } from "../lib/call-session";
 import { newClientId } from "../lib/client-id";
 import {
+  computerScreenInvalidated,
   embeddableScreenUrl,
   loadComputerScreen,
   screenIframeSandbox,
@@ -1340,7 +1341,9 @@ export function ShellPage() {
         ) {
           // waiting_input: reconcile ask cards if a stale post-send refresh raced SSE.
           void refreshThread(active.id).catch(() => undefined);
-        } else if (isComputerStatusEvent(event)) {
+        } else if (computerScreenInvalidated(event, active.id)) {
+          // A resumed run can rotate screen authorization even when the desktop
+          // stays running. Fetch a new capability; never reuse a revoked URL.
           void refreshComputerScreen(active.id).catch(() => undefined);
         }
       },
@@ -1433,6 +1436,11 @@ export function ShellPage() {
         if (isRunTerminalEvent(event) || event.type === "run.waiting_input") {
           // waiting_input: reconcile ask cards if a stale post-send refresh raced SSE.
           void refreshGroupThread(groupId).catch(() => undefined);
+        }
+        if (computerScreenInvalidated(event, computerBotIdRef.current) && computerVisible.current) {
+          // Group snapshots have no member computer status. Refresh only the
+          // displayed member, not whichever teammate produced the latest event.
+          void refreshComputerFor(event.botId).catch(() => undefined);
         }
       },
     });

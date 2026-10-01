@@ -1,3 +1,19 @@
+import type { ProductEvent } from "@rakazo/contracts";
+import { isRunTerminalEvent } from "@rakazo/core";
+import { isComputerStatusEvent } from "./thread-events";
+
+/** Run setup can revoke the old capability without emitting computer.status. */
+export function computerScreenInvalidated(event: ProductEvent, displayedBotId?: string): boolean {
+  return Boolean(
+    displayedBotId &&
+      event.botId === displayedBotId &&
+      (event.type === "run.started" ||
+        event.type === "run.waiting_input" ||
+        isRunTerminalEvent(event) ||
+        isComputerStatusEvent(event)),
+  );
+}
+
 export interface ComputerScreenResult {
   url: string | null;
   error: string | null;
