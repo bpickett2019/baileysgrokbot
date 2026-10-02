@@ -136,6 +136,12 @@ Don't "fix" them by guessing. Turn each one into a question for the user.
 Send the user `plan.md`, then the errors from `validation.md`, then the open
 questions, in that order. Use `ask_user` where 2–4 options cover a question.
 
+For admission-item codes in discounts (for example `EO-PB`), offer:
+- "Map to the item for all reg types": `reg_types: []`, so the codes are created active.
+- "Map to the item, limited to the suggested reg types": the API can't set the
+  limit, so those codes are created inactive until it's set in the UI.
+- "Skip these codes".
+
 Record each answer in `cvent-builds/<FP>/decisions.md`, quoting the user. Apply
 it as an `agent_plan.json` patch, and write any accepted discount-code mappings
 to `code_map.json` as `{"CODE": {"admission_item": "...", "reg_types": [...]}}`.

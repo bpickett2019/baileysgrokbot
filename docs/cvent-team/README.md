@@ -44,6 +44,19 @@ Environment files, model credentials, local database contents, uploaded workbook
 generated event plans, browser sessions, transcripts, and production event details.
 This repository is not a backup of the running instance's private state.
 
+## Cvent API (discounts)
+
+Discount codes load through server-side tools (`cvent_discounts_check` and
+`cvent_discounts_apply`) that use a saved `cvent_api` credential:
+- **Credential:** basic auth, with the Cvent client ID as the username and the
+  client secret entered in the protected card.
+- **Secrecy:** the secret and the OAuth token never reach the model, and
+  `secret_request` refuses this credential.
+- **Write rules:** existing codes are never modified, every write is read back,
+  and the first unverified write stops the batch without replay.
+
+The tools appear only for bots that have the credential.
+
 ## Runtime files
 
 Each build writes to `shared/cvent-builds/<FP>/`: `plan.json`, `plan.md`,

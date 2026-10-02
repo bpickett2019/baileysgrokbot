@@ -175,7 +175,7 @@ import {
   browserNavigateFromTool,
   browserSnapshotFromTool,
 } from "./browser-tools.js";
-import { agentConnectionTools, builtinAgentTools } from "./builtin-tools.js";
+import { agentConnectionTools, builtinAgentTools, cventDiscountTools } from "./builtin-tools.js";
 import { archiveSpawnedBot, spawnBot } from "./child-bots.js";
 import { type CloudAgentConnection, cloudAgentsEnabled } from "./cloud-agent-factory.js";
 import { executeCloudAgentTool } from "./cloud-agent-service.js";
@@ -211,6 +211,7 @@ import { observationToolResult, parseComputerActions } from "./computer-tools.js
 import { checkpointRunComputerWorkspace } from "./computer-workspace.js";
 import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safety.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
+import { CVENT_CREDENTIAL_NAME, runCventDiscountTool } from "./cvent-discounts.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import { handoffToGroupBot, loadGroupContext } from "./group-handoff.js";
 import {
@@ -275,7 +276,7 @@ import {
 } from "./plot-tool.js";
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
-import { assertSafeRemoteUrl } from "./remote-mcp.js";
+import { assertSafeRemoteUrl, createSafeRemoteFetch } from "./remote-mcp.js";
 import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
 import {
   commitConsumedRunSecret,
@@ -360,6 +361,7 @@ const READ_ONLY_AGENT_TOOLS = new Set([
   "browser_snapshot",
   "list_secrets",
   "cloud_agent_status",
+  "cvent_discounts_check",
 ]);
 /** Added to the turn prompt when the user spoke this message on a live voice call. */
 export const VOICE_CALL_INSTRUCTION =
@@ -368,7 +370,9 @@ const MAX_MODEL_FILE_BYTES = 250_000;
 const TURN_ATTACHMENT_UNAVAILABLE =
   "An attachment in this message could not be loaded. Tell the user the attachment was unavailable and do not guess its contents.";
 const STEERING_ATTACHMENT_UNAVAILABLE = TURN_ATTACHMENT_UNAVAILABLE;
-const BUILTIN_AGENT_TOOL_NAMES = new Set(builtinAgentTools.map((tool) => tool.name));
+const BUILTIN_AGENT_TOOL_NAMES = new Set(
+  [...builtinAgentTools, ...cventDiscountTools].map((tool) => tool.name),
+);
 
 /** Avoid an expensive remote workspace export when a turn never touched the computer. */
 export function createRunWorkspaceCheckpoint(checkpoint: () => Promise<unknown>) {
@@ -1605,6 +1609,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const hasMessagingIdentity = deps.messaging
           ? await deps.messaging.hasIdentity(bot.id)
           : false;
+        const hasCventCredential =
+          (await deps.prisma.botSecret.count({
+            where: {
+              botId: bot.id,
+              userId: run.userId,
+              spaceId: run.spaceId,
+              name: CVENT_CREDENTIAL_NAME,
+            },
+          })) > 0;
         const messagingContext = hasMessagingIdentity
           ? [messagingDmSurfaceNote(), messagingChannelRun ? messagingChannelPrivacyBlock() : null]
               .filter(Boolean)
@@ -1658,9 +1671,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }),
           // Cross-owner agent connections only exist for chat-linked bots.
           ...(hasMessagingIdentity ? agentConnectionTools : []),
+          // Only bots with a saved Cvent credential see the server-side discount loader.
+          ...(hasCventCredential ? cventDiscountTools : []),
         ];
         const exposedConnectorTools = discovered.filter(
-          (tool) => !builtinAgentTools.some((builtin) => builtin.name === tool.name),
+          (tool) => !BUILTIN_AGENT_TOOL_NAMES.has(tool.name),
         );
         const connectorTools = new Map(
           exposedConnectorTools.map((tool) => [tool.name, tool] as const),
@@ -2053,6 +2068,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
               }
             }
+          }
+          if (name.startsWith("cvent_discounts_") && !hasCventCredential) {
+            return { error: "No cvent_api credential is saved for this bot." };
           }
           const viaConnector = !BUILTIN_AGENT_TOOL_NAMES.has(name);
           // Declared effect of the operation this call dispatches (installed API method and
@@ -3326,6 +3344,61 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const parsed = BotSecretName.safeParse(args.name);
             if (!parsed.success) return finish({ error: "A valid credential name is required." });
             return finish(await forgetBotSecret(deps.prisma, run, parsed.data));
+          }
+          if (name === "cvent_discounts_check" || name === "cvent_discounts_apply") {
+            const fetch = createSafeRemoteFetch(
+              deps.secretHttp?.fetch,
+              deps.secretHttp?.resolveHostname,
+            );
+            try {
+              return finish(
+                await runCventDiscountTool({
+                  args,
+                  apply: name === "cvent_discounts_apply",
+                  loadCredential: async () => {
+                    const row = await deps.prisma.botSecret.findFirst({
+                      where: {
+                        botId: run.botId,
+                        userId: run.userId,
+                        spaceId: run.spaceId,
+                        name: CVENT_CREDENTIAL_NAME,
+                      },
+                    });
+                    if (!row) return null;
+                    const destination = normalizeSecretDestination(row);
+                    if (destination.auth.type !== "basic") return null;
+                    return {
+                      origin: destination.origin,
+                      username: destination.auth.username,
+                      secret: deps.secretStore.load(row.ciphertext, row.id),
+                    };
+                  },
+                  readFile: (path) =>
+                    deps.sandbox.readFile(
+                      computer,
+                      resolveBotWorkspacePath(computerMode, bot.id, path),
+                      context,
+                      { maxBytes: 5_000_000 },
+                    ),
+                  writeFile: async (path, content) => {
+                    workspaceCheckpoint.markDirty();
+                    await deps.sandbox.writeFile(
+                      computer,
+                      {
+                        path: resolveBotWorkspacePath(computerMode, bot.id, path),
+                        content: new TextEncoder().encode(content),
+                      },
+                      context,
+                    );
+                  },
+                  fetch: (url, init) => fetch(url, init),
+                  registerRedactions: registerRunSecrets,
+                  signal: context.signal,
+                }),
+              );
+            } finally {
+              await fetch.close().catch(() => undefined);
+            }
           }
           if (name === "secret_request") {
             try {

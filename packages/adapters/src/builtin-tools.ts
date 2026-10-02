@@ -981,6 +981,49 @@ export const builtinAgentTools: ConnectorTool[] = [
 ];
 
 /** Agent-connection tools, exposed only when the messaging surface is enabled. */
+const cventDiscountArgs = {
+  type: "object",
+  properties: {
+    eventId: { type: "string", description: "Cvent event UUID of the verified target event." },
+    eventTitle: {
+      type: "string",
+      description: "Exact event title; the call refuses to run if Cvent reports a different title.",
+    },
+    file: {
+      type: "string",
+      description:
+        'Work file in this bot\'s home: {"discounts": [...]} built by the Cvent discount skill.',
+    },
+    limit: {
+      type: "number",
+      description: "apply only: most new codes to create in this call (1-100, default 25).",
+    },
+    fileSha256: {
+      type: "string",
+      description:
+        "apply only: the fileSha256 reported by cvent_discounts_check for this exact file.",
+    },
+  },
+  required: ["eventId", "eventTitle", "file"],
+} as const;
+
+/** Offered only to bots that saved a `cvent_api` credential; it never leaves the server. */
+export const cventDiscountTools: ConnectorTool[] = [
+  {
+    name: "cvent_discounts_check",
+    description:
+      "Read-only. Compare every code in a discount work file with a Cvent event using the saved cvent_api credential: reports which codes already exist, differ, are blocked, or would be created, plus the file's fileSha256. Writes nothing to Cvent.",
+    inputSchema: cventDiscountArgs,
+    readOnly: true,
+  },
+  {
+    name: "cvent_discounts_apply",
+    description:
+      "Create the missing discount codes from a work file in a Cvent event, server-side with the saved cvent_api credential. Requires the fileSha256 from cvent_discounts_check, so the approval covers that exact file. Existing codes are never modified. Handles up to `limit` new codes per call; call again to continue. Stops at the first write it cannot verify; never retry an uncertain code without checking Cvent.",
+    inputSchema: cventDiscountArgs,
+  },
+];
+
 export const agentConnectionTools: ConnectorTool[] = [
   {
     name: "connect_agent",

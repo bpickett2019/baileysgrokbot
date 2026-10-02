@@ -122,6 +122,28 @@ describe("authenticated secret requests", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("refuses credentials reserved for a server-side tool", async () => {
+    const { input, fetch, findFirst } = await fixture({ type: "basic", username: "client-id" });
+    findFirst.mockImplementation(async () => ({
+      ...scope,
+      name: "any_name",
+      origin: "https://api-platform.cvent.com",
+      auth: { type: "basic", username: "client-id" },
+      id: "secret-1",
+      ciphertext: "unused",
+    }));
+    const result = await requestWithBotSecret({
+      ...input,
+      request: {
+        name: "cvent_api",
+        url: "https://api-platform.cvent.com/ea/oauth2/token",
+        method: "POST",
+      },
+    });
+    expect(result).toMatchObject({ error: expect.stringContaining("reserved") });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("rejects private DNS answers without issuing a request", async () => {
     const { input, fetch } = await fixture();
     input.remote.resolveHostname = async () => [{ address: "169.254.169.254", family: 4 }];

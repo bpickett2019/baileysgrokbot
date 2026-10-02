@@ -188,21 +188,99 @@ Source: `discounts.codes`, with the admission-item code map from `decisions.md`.
 
 Channel, in order of preference:
 
-1. **An installed Cvent API connector.** Call `task_catalog` and look for a Cvent
-   tool that creates discounts. Read its input schema; never guess endpoints or
-   call the Cvent REST API from shell. Before the first write, confirm all three
-   of these, or fall back to option 2:
-   - the connector's environment matches the run's (sandbox or production);
-   - every call carries the verified target event ID;
-   - it creates event-level discounts, never account-level ones.
-
-   Create **one** code, read it back in the planner UI, and only then do the rest.
-2. **The planner's discount import.** Build the file below, then upload it through
-   the UI. The native file picker needs `request_takeover` (computer provider) or
-   the user (Ego provider).
+1. **The server-side Cvent API tools** (`cvent_discounts_check` and
+   `cvent_discounts_apply`). They appear only once a `cvent_api` credential is
+   saved. The client secret and OAuth token stay on the server, so the model never
+   sees them, and `secret_request` refuses that credential. See "R7 via the API"
+   below.
+2. **The planner's discount import.** Build the import file below, then upload it
+   through the UI. The native file picker needs `request_takeover` (computer
+   provider) or the user (Ego provider).
 3. **Manual UI entry,** one code at a time, from a single snapshot per form. Use
-   this when there are fewer than about 20 codes, or when the import is
-   unavailable.
+   this only for a handful of codes.
+
+### R7 via the API
+
+**One-time setup.** If `list_secrets` shows no `cvent_api`, ask the user for the
+Cvent client ID and call `request_secret` with:
+- `{"name": "cvent_api", "origin": "https://api-platform.cvent.com", "auth": {"type": "basic", "username": "<client ID>"}}`
+- `purpose: "api_key"`
+
+The user types the client secret into the protected card. Use the regional origin
+(for example `https://api-platform-eur.cvent.com`) if the account is hosted
+outside North America. The tools appear on the next message.
+
+**Event identity.** You need the event's Cvent UUID and its exact title. The UUID
+is in the planner URL of the verified target event (`evtstub=` or `eventId=`).
+Never guess it.
+
+**Build the work file** (shell, `cwd: "shared"`):
+
+```bash
+python3 - <<'EOF'
+import json, os, re
+plan=json.load(open("cvent-builds/<FP>/plan.json"))
+known={i["code"] for i in plan["registration"]["admission_items"]}
+path="cvent-builds/<FP>/code_map.json"
+cmap={k:v for k,v in (json.load(open(path)) if os.path.exists(path) else {}).items() if v}
+METHOD={"Subtract an amount":"BY_AMOUNT","Subtract a percentage":"BY_PERCENTAGE","Charge a fixed price":"FLAT_PRICE"}
+AUD={"invitees and guests":"ALL","invitees":"PRIMARY","guests":"GUEST","":"ALL"}
+iso=lambda v: v[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}( .*)?", v or "") else None
+out, held = [], []
+for c in plan["discounts"]["codes"]:
+    items, types, unmapped, plain = [], [], [], []
+    for code in c["admission_items"]:
+        if code in cmap: items.append(cmap[code]["admission_item"]); types += cmap[code]["reg_types"]
+        elif code in known: items.append(code); plain.append(code)
+        else: unmapped.append(code)
+    if unmapped or (types and plain) or c["method"] not in METHOD:
+        held.append({"code": c["code"], "unmapped": unmapped, "mixed_with": plain if types else [], "method": c["method"], "source": c["source"]}); continue
+    spec={"code": c["code"], "name": (c["name"] or c["code"])[:50], "method": METHOD[c["method"]], "value": float(c["amount"]),
+          "active": c["active"] and not types,  # a reg-type limit can't be set by API: create inactive, list it
+          "stackable": c["stackable"], "capacity": int(c["capacity"]) if str(c["capacity"]).isdigit() else -1,
+          "audience": AUD.get(c["usable_by"].lower(), "ALL"),
+          "includeGuestsTowardsCapacity": not c["count_guests"].lower().startswith("no"),
+          "admissionItems": list(dict.fromkeys(items)), "source": c["source"]}
+    for k, v in (("effectiveFrom", iso(c["effective_from"])), ("effectiveTo", iso(c["effective_to"]))):
+        if v: spec[k] = v
+    note = (c["internal_note"] + (f" | limit to reg types: {','.join(dict.fromkeys(types))}" if types else "")).strip(" |")
+    if note: spec["note"] = note[:300]
+    out.append(spec)
+json.dump({"discounts": out}, open("cvent-builds/<FP>/discounts_api.json", "w"), indent=1)
+json.dump(held, open("cvent-builds/<FP>/discount_blocked.json", "w"), indent=1)
+print(len(out), "in work file ·", sum(1 for d in out if not d["active"] and "limit to reg types" in d.get("note","")), "inactive pending reg-type limit ·", len(held), "held")
+EOF
+```
+
+**Run it:**
+1. `cvent_discounts_check` with `{eventId, eventTitle, file: "shared/cvent-builds/<FP>/discounts_api.json"}`.
+   This is read-only and examines every code. It reports `would_create`,
+   `unchanged`, `preserved_difference` and `blocked`, plus the file's
+   `fileSha256`. Show the user the counts and the `attention` list.
+2. After the user's OK, call `cvent_discounts_apply` with the same arguments plus
+   the `fileSha256` from that check. Apply refuses a changed file, so the approval
+   always covers what the user saw.
+
+   Each call needs one approval and handles up to `limit` new codes (default 25).
+   Call it again until `notInThisCall` is 0. Codes created earlier come back as
+   `unchanged`, so re-running is safe.
+
+   Each apply writes a timestamped `*.applied-<time>.json` with every outcome,
+   updated as it goes. Its `attention` list includes created codes with their
+   IDs. Stopping the run stops the batch between requests.
+3. **Stop rules:**
+   - **`stoppedEarly` is true, or any code is `uncertain`:** stop R7. Report the
+     code and the `resultsFile`, and ask the user to check that code in Cvent.
+     Never retry an uncertain code, and never re-create it in the UI.
+   - **`preserved_difference`:** the existing code was left as it is. List it for
+     the user; the tool never edits existing codes.
+   - **`blocked`:** report the reason. A missing admission item usually means R3
+     isn't finished.
+4. **Reg-type limits:** codes created inactive with a "limit to reg types" note
+   can't be restricted through the API. Hand them to the UI (set the limit, then
+   activate), or ask the user to decide.
+
+The import-file route below is the fallback when no API credential is available.
 
 Build the work files. The import file keeps the RR template's own column headers
 (`template_headers`), because the RR tab mirrors Cvent's discount template.

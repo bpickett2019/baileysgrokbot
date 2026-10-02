@@ -8,12 +8,20 @@ import {
 } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { combineSignals, redactConnectorPayload } from "./connector-safety.js";
+import { CVENT_API_ORIGIN } from "./cvent-discounts.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { createPrivateNetworkFetch, createSafeRemoteFetch } from "./remote-mcp.js";
 import type { EncryptedSecretStore } from "./secrets.js";
 import { readBodyCapped, withAbort } from "./web-ssrf.js";
 
 export type BotSecretScope = { userId: string; spaceId: string; botId: string };
+
+/**
+ * Origins whose credentials only a server-side tool may use. secret_request refuses
+ * them under any name, so a model cannot mint a raw API token and act outside that
+ * tool's guards.
+ */
+const SERVER_TOOL_ORIGINS = [CVENT_API_ORIGIN];
 function scopeFields({ userId, spaceId, botId }: BotSecretScope): BotSecretScope {
   return { userId, spaceId, botId };
 }
@@ -157,6 +165,9 @@ export async function requestWithBotSecret(input: {
   });
   if (!row) return { error: "Credential is unavailable. Use request_secret to save it first." };
   const destination = normalizeSecretDestination(row);
+  if (SERVER_TOOL_ORIGINS.some((origin) => origin.test(destination.origin))) {
+    return { error: "This credential is reserved for its server-side tool." };
+  }
   if (destination.auth.type === "login") {
     return { error: "Website logins can only be filled into their site with browser_act." };
   }
