@@ -62,10 +62,14 @@ d. **Login.** Every run starts with a fresh Cvent sign-in; don't rely on a sessi
 
 ## Flow
 
-1. **Parse** with `/cvent-rr-parse`. This writes `shared/cvent-builds/<FP>/plan.json`
-   and `plan.md`.
-2. **Present the plan** with its open questions first. **Wait for the user's OK**,
-   and record the answers in `decisions.md` and `code_map.json`.
+1. **Parse** with `/cvent-rr-parse`: run extract, then plan. Map any section whose
+   coverage is `needs_mapping` into `agent_plan.json`, citing source cells, then
+   run validate. This works for any RR layout. Anything the tool can't settle
+   becomes a question, never a guess.
+2. **Present the plan**, then the validation errors, then the open questions.
+   **Wait for the user's OK**. Record the answers in `decisions.md`, apply them as
+   `agent_plan.json` patches and `code_map.json`, and re-run plan and validate.
+   Sections that still have errors stay blocked; tell the user which ones.
 3. **Sign in and open the target event** (sandbox). Read back the title, code,
    dates and environment, check them against the target mode, and capture a
    snapshot as evidence.

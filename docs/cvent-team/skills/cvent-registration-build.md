@@ -19,6 +19,11 @@ For tool rules, read `/cvent-team-browser` (computer provider) or
 Shell commands run with `cwd: "shared"`; the paths in the snippets below are
 relative to it. File tools use `shared/...`.
 
+**Gate:** read `shared/cvent-builds/<FP>/validation.json`. If `registration` has
+errors, build none of R1–R6. If `discounts` has errors, skip R7. If `items` has
+errors, skip R5. Report each blocked step with the errors verbatim. Every plan
+entry has a `source` cell; quote it in `status.md` when something looks wrong.
+
 Hard rules:
 - No publish, activate, delete or clone.
 - Change only the target event.
@@ -138,12 +143,20 @@ print("fee mismatches:", bad or "none")
 EOF
 ```
 
-## R5 Optional items
+## R5 Optional items, sessions and add-ons
 
-Source: the `optional_items` and `sessions` lists in the plan.
+Source: `items`, a list of groups, one per RR tab. Each group has a `kind`
+(`session`, `add-on`, `optional` or `membership`), its own `price_tiers` and its
+`items`.
 
-- If both are empty, skip R5 with the reason "RR has no optional items", unless
-  `decisions.md` lists items to add. Never create placeholder or test items unless
+- If `items` is empty, skip R5 with the reason "RR has no optional items", unless
+  `decisions.md` lists items to add.
+- An item tier whose name or dates match a registration tier uses that tier;
+  otherwise create the item's own fee window from the group's `price_tiers`.
+- `{member, non-member}` prices are charged by reg type. Use the item's
+  `member_fee_types` and `nonmember_fee_types` lists; if those are empty, ask.
+- Items with `sessionboard_sync` = Yes are synced from Sessionboard, so don't
+  create them by hand. List them as "synced". Never create placeholder or test items unless
   `decisions.md` asks for them by name. When it does, prefix each name with
   `TEST - `.
 - Map these fields per row: item code, title, description, capacity (blank means

@@ -13,6 +13,9 @@ You need:
 - the browser lock;
 - the target event verified as described in `/cvent-rr-event-build`.
 
+**Gate:** if `validation.json` has errors under `website`, build only the parts
+they don't touch, and list the rest as blocked.
+
 Read `/cvent-team-browser` (`BROWSER_PROVIDER=computer`) or `/cvent-ego-navigation`
 (`BROWSER_PROVIDER=ego`) for the tool rules. Both use `browser_snapshot` and
 `browser_act`.
@@ -106,7 +109,9 @@ Source: `website.footers.<audience>`. Each audience is one footer.
    first audience listed) as the default footer.
 2. Add only links where `visible` is true, in RR order. Use the RR label as the
    link text and the exact URL. External links open in a new tab. The Contact Us
-   button is a `mailto:` button using the address in the plan.
+   button is a `mailto:` button using the address in the plan. A `cvent-generated`
+   URL (for example Registration Status) links to the matching built-in event
+   page, picked with the editor's page-link option.
 3. For every other audience (for example exhibitor), give that path's pages their
    own footer with that audience's link list. Links that exist only for one
    audience, such as an exhibitor resource center, never appear in the default

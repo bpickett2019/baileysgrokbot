@@ -5,7 +5,7 @@ initial playbook, not a validated unattended event builder.
 
 - `bots.json`: Chief and six specialist definitions, with no account or database IDs.
 - `skills/`: build runbooks, the active Team Computer browser workflow, and an optional host-Ego adapter guide.
-  - `cvent-rr-parse` embeds the RR parser, so a bot can install it without a repo checkout.
+  - `cvent-rr-parse` embeds `rr.py` (extract → plan → validate), which handles any RR layout: current reg sheets are parsed automatically, legacy ones are mapped by the agent with cited source cells, and a validator blocks sections with real RR errors.
   - `cvent-website-build` covers theme, header, footer and the six body widget types.
   - `cvent-registration-build` covers types, paths, admission items, pricing, optional items, advanced rules, discounts and vouchers.
 - `../vendor/ego-browser/`: the complete unmodified Ego skill, references, installer, example learnings, and MIT license (reference only; not auto-loaded).
