@@ -5,6 +5,7 @@ import {
   listAgentSkillRecords,
   skillCreateFromTool,
   skillDeleteFromTool,
+  skillFilesFromTool,
   skillReadFromTool,
   skillUpdateFromTool,
 } from "./skill-tools.js";
@@ -122,6 +123,42 @@ describe("skill tools", () => {
     expect(await skillReadFromTool(prisma as never, owner, { name: "Daily standup" })).toEqual({
       error: "Skill not found.",
     });
+  });
+
+  it("reads file blocks as stubs and writes them exactly with skill_files", async () => {
+    const tool = `PARSER_VERSION = 6\n${"row = 1\n".repeat(20_000)}`;
+    const content = buildSkillMd({
+      name: "Builder",
+      description: "Builds things",
+      body: `Install first.\n\n\`\`\`python file=shared/tools/rr.py\n${tool}\`\`\`\n`,
+    });
+    expect(await skillCreateFromTool(prisma as never, owner, { content })).toMatchObject({
+      ok: true,
+    });
+
+    const read = await skillReadFromTool(prisma as never, owner, { name: "Builder" });
+    expect(read.files).toEqual(["shared/tools/rr.py"]);
+    expect(String(read.content)).not.toContain("row = 1");
+    expect(String(read.content).length).toBeLessThan(500);
+
+    const written = new Map<string, string>();
+    const result = await skillFilesFromTool(
+      prisma as never,
+      owner,
+      { name: "Builder" },
+      async (path, text) => {
+        written.set(path, text);
+      },
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      skill: "Builder",
+      written: [{ path: "shared/tools/rr.py" }],
+    });
+    expect(written.get("shared/tools/rr.py")).toBe(tool);
+    expect(
+      await skillFilesFromTool(prisma as never, owner, { name: "Missing" }, async () => undefined),
+    ).toEqual({ error: "Skill not found." });
   });
 
   it("preserves extra frontmatter keys on update", async () => {

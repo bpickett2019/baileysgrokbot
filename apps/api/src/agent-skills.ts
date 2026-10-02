@@ -8,6 +8,7 @@ import {
   mergeBuiltinSkills,
   parseSkillMd,
   type SkillSource,
+  skillContentProblem,
 } from "@rakazo/core";
 import { IsolationError, type PrismaClient } from "@rakazo/db";
 
@@ -61,11 +62,8 @@ export function resolveSkillContent(input: {
   prior?: { content: string };
 }): { name: string; description: string; content: string } {
   const ensureContentLimit = (content: string): string => {
-    if (content.length > 100_000) {
-      throw new ORPCError("BAD_REQUEST", {
-        message: "Skill content must be at most 100000 characters.",
-      });
-    }
+    const problem = skillContentProblem(content);
+    if (problem) throw new ORPCError("BAD_REQUEST", { message: problem });
     return content;
   };
 

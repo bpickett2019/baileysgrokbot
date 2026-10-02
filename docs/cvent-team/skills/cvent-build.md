@@ -21,6 +21,7 @@ RR workbook in → drafted, verified, **unpublished** Cvent event out. One bot, 
 - **Never** publish, go live, launch or activate. Never send or schedule an email, delete, archive, or clone. The publish step belongs to a human.
 - **Stay inside the target event.** Never change account libraries, themes, templates, users, contact types or account-level discounts.
 - **Sandbox by default.** Use production only when the user names it for this run.
+- **Discount codes** are written only by `cvent_discounts_apply`. Never create, edit, activate or import a discount code in the Cvent UI or by file upload.
 - **Passwords** go in only through `fill_secret` or `request_takeover`. Never put them in chat, files, shell or Playwright.
 
 ## Files
@@ -28,19 +29,22 @@ RR workbook in → drafted, verified, **unpublished** Cvent event out. One bot, 
 Run `shell` with `cwd: "shared"`. File tools use `shared/...`.
 
 ```
-cvent-builds/tools/rr.py, cvent_pw.py        tools (Appendix A, B)
-cvent-builds/<FP>/plan.json plan.md          the plan (source of truth)
+cvent-builds/tools/rr.py, cvent_pw.py        tools (Appendix A, B; written by skill_files)
+cvent-builds/<FP>/cells.json                  every RR cell exactly as stored (evidence)
+            plan.json plan.md                the plan (source of truth)
             validation.md validation.json    errors block their section
             decisions.md                     user answers, quoted; override the plan
             agent_plan.json code_map.json    your mappings and patches
             assets/ assets.json              images pulled from the RR
-            status.md qa.md                  progress, evidence, final check
+            status.md                        progress
+            expected.json readback.json      every planned value / what Cvent shows
+            qa.md qa.json                    the full comparison
 cvent-learnings/procedures.md                how each Cvent screen works (shared, all runs)
 ```
 
 ## 0. Start
 
-1. **Tools.** If `cvent-builds/tools/rr.py` or `cvent_pw.py` is missing, or its version line differs from the appendix, write it with `write_file`. Then run
+1. **Tools.** Call `skill_files` with `{"name": "cvent-build"}` at the start of every run. It writes the two tools from the appendices exactly, so never retype them. Then run
    `python3 -c "import openpyxl, playwright" 2>/dev/null || pip install --user openpyxl playwright`.
    No browser download is needed; Playwright attaches to the existing Chrome.
 2. **Intake.** Collect:
@@ -66,9 +70,14 @@ Read the FP code from `plan.md` and rename `_new` to `<FP>`. Use `--keep-test-co
 
 **Coverage.** `plan.md` lists each section as `parsed`, `needs_mapping`, `agent` or `absent`.
 
+**Evidence.** Nothing in the RR is dropped. `cells.json` holds every non-empty cell exactly as stored: value, number format, hyperlink and comment. Plan text is the cell text verbatim, minus leading and trailing spaces. Never retype, tidy or shorten it.
+- Percent-formatted cells read as percentage points (`100%`, not `1`).
+- A date with no year is flagged on the tier (`inferred`) and in the gaps. Confirm it with the user.
+- Cell comments are planner notes. Read them for any row you build.
+
 **Legacy registration (`needs_mapping`).** Old reg types like `ATT Attendee` and `EO Expo Only`, usually with a NEW REG MAPPING tab and sometimes Member/Non-Member columns. Write `agent_plan.json`:
 `{"notes": "...", "registration": {"price_tiers": [...], "admission_items": [...], "reg_types": [...], "paths": [...]}}`.
-The shapes match `plan.json`, and every reg type, item and path carries `"source": "Sheet!A16"`.
+The shapes match `plan.json`, and every reg type, item and path carries `"source": "Sheet!A16"`. Copy names, codes and prices from `cells.json` exactly as stored.
 - Use the RR's own names and codes: the mapping tab, then the `registration.lookups` lists. A code that exists nowhere in the RR gets `"code_source": "proposed"` and goes on the user's question list.
 - Take prices from the old row that maps to each new type and item. Member/Non-Member columns become separate reg types only if the mapping tab names them. A cell holding two values is a question.
 - Skip EXAMPLES rows, dropdown lists, and rows with no Registration Method. Old rows with no mapping row are listed in `notes` as questions, never dropped silently.
@@ -90,11 +99,10 @@ Patch only what the RR states or the user decided.
    - the open questions.
 
    Use `ask_user` where 2–4 options fit.
-2. For discount admission-item codes such as `EO-PB`, offer three options:
+2. For discount admission-item codes such as `EO-PB`, offer two options:
    - map to the item for all reg types;
-   - map it limited to the suggested types (those codes are created inactive until the limit is set in the UI);
-   - skip them.
-3. Write the answers to `decisions.md`, apply them as `agent_plan.json` patches and `code_map.json` (`{"CODE": {"admission_item": "...", "reg_types": [...]}}`, accepted entries only), then re-run `plan` and `validate`.
+   - hold those codes. They aren't created, and they're listed for a human (the API tool can't limit a code to reg types).
+3. Write the answers to `decisions.md`, apply them as `agent_plan.json` patches and `code_map.json` (`{"CODE": {"admission_item": "..."}}`, accepted entries only), then re-run `plan` and `validate`.
 4. **Get an explicit OK before any Cvent write.** A section with validation errors is skipped and reported as blocked.
 
 ## 2. Build (in this order; finish one screen area before the next)
@@ -124,24 +132,23 @@ Never delete, deactivate or rename anything to make it fit. Re-runs must never d
   - One fee window per plan tier, from 12:00 AM on `start` to 11:59 PM on `end` in the event time zone, contiguous with no overlaps.
   - Set amounts for every type × item × tier. `0` is an explicit $0.
   - Reprint fees and GL codes are not admission fees.
-  - Verify by writing what you read back to `fees_readback.json` (`{"TYPE|ITEM|TIER": "amount"}`) and running the fee check (Appendix C1).
+  - Verify by filling every `fee|…` entry in `readback.json` from the screen, then running `verify` (step G). Fix any fee it lists before moving on.
 - **R5 Optional items, sessions, add-ons:** from `items` (groups by `kind`).
   - If `items` is empty, skip R5 unless `decisions.md` names items.
   - Skip `sessionboard_sync` = Yes; Sessionboard syncs those.
   - `{member, non-member}` prices are charged by the `member_fee_types` / `nonmember_fee_types` lists.
 - **R6 Advanced rules:** `admission_item_availability` is usually already enforced by R3's associations. Otherwise add an event rule limiting that type to `allowed_admission_items`. Add only rules the RR states. `question_display` rules belong to step C.
-- **R7 Discount codes:**
-  - **Preferred: the API.** Build the work file (Appendix C2), then run `cvent_discounts_check` with `{eventId, eventTitle, file}`.
+- **R7 Discount codes (API tool only):**
+  - Build the work file (Appendix C2), then run `cvent_discounts_check` with `{eventId, eventTitle, file}`.
     - The event UUID is in the planner URL. Never guess it.
     - Show the user the counts and the `attention` list.
     - After their OK, run `cvent_discounts_apply` with the same arguments plus the check's `fileSha256`. Repeat until `notInThisCall` is 0.
-  - **If the tools are missing,** save the `cvent_api` credential: ask the user for the client ID, then `request_secret` with `{"name": "cvent_api", "origin": "https://api-platform.cvent.com", "auth": {"type": "basic", "username": "<client ID>"}}`. The user types the secret into the protected card, and the tools appear on the next message.
+  - **If the tools are missing,** save the `cvent_api` credential: ask the user for the client ID, then `request_secret` with `{"name": "cvent_api", "origin": "https://api-platform.cvent.com", "auth": {"type": "basic", "username": "<client ID>"}}`. The user types the secret into the protected card, and the tools appear on the next message. If they still don't appear, R7 is blocked: report it and move on.
   - **Stop rules:**
-    - `uncertain` or `stoppedEarly`: stop R7 and ask the user to check that code in Cvent. Never retry it or recreate it in the UI.
+    - `uncertain` or `stoppedEarly`: stop R7 and ask the user to check that code in Cvent. Never retry it, and never recreate it in the UI.
     - `preserved_difference`: the existing code was left alone; report it.
-    - Codes created inactive with a "limit to reg types" note need the limit set in the UI, then activation.
-  - **Without API access,** upload an import file through the planner, using the RR template headers and checking them against Cvent's template, or enter a handful of codes by hand.
-- **R8 Vouchers and group discounts:** build only what the RR's voucher or group tabs list. Never turn discount codes into vouchers.
+    - `blocked` and held codes (`discount_blocked.json`): report them for a human. Don't work around them.
+- **R8 Vouchers and group discounts:** build only what the RR's voucher or group tabs list. Never turn discount codes into vouchers, and never create a discount code here.
 
 **C. Questions and approvals.** For each question, in RR order:
 - set the text, type, answers in order, required flag, which reg types see it, and its page;
@@ -170,16 +177,29 @@ Never delete, deactivate or rename anything to make it fit. Re-runs must never d
 
 **F. Badges and onsite.** Badge layouts per type use `badge_text`, the RR's badge tab and show-specific badge images. Apply reprint fees and onsite and Scan & Go settings from `other_tabs`. Never activate devices or launch onsite mode.
 
-**G. QA.** Read back every section against `plan.json`:
-- counts per section;
-- at least 3 spot checks each (names, amounts, dates);
-- the event still unpublished.
-
-Write `qa.md` with pass or fail per check. Then send the user one final report covering:
-- the per-section status;
-- each blocker, with the exact UI message;
-- pre-existing items that aren't in the RR;
-- what is left for a human, including publishing.
+**G. QA (every value, not samples).**
+1. Run `python3 cvent-builds/tools/rr.py expect cvent-builds/<FP>` (add `--test-target` in that mode) after the final `plan`. It writes:
+   - `expected.json`: one check for every value the plan puts in Cvent;
+   - `readback.json`: every check id, set to `null`.
+2. For each id, read what Cvent actually shows and write it in. Read through the API where a tool can read it, and from the screen otherwise. Never copy from the plan.
+   - Text and codes: the string Cvent shows.
+   - Money: the amount.
+   - Dates: `YYYY-MM-DD`.
+   - Booleans: `true` or `false`.
+   - Sets and lists: JSON arrays. Footer links are `"Label -> URL"` in page order.
+   - `judge` checks (time zone, question type, display logic, comms): `{"observed": "<what Cvent shows>", "ok": true|false}`.
+   - Discounts: run `cvent_discounts_check` again after the last apply. `verify` reads its results file, and every code must be `unchanged`.
+3. Run `python3 cvent-builds/tools/rr.py verify cvent-builds/<FP>`. It writes `qa.md` and `qa.json`, and exits 1 unless every check passes.
+   - Fix each `fail` in Cvent, re-read it, and run `verify` again.
+   - `unread` is a fail: read it.
+   - Checks in sections that validation blocked show as `blocked`.
+   - A check is waived only when the user decided it. Quote the decision in `decisions.md` (including the check id), and add `{"<id>": "<reason>"}` to `qa_waivers.json`.
+4. Send the user one final report covering:
+   - the QA table from `qa.md`;
+   - each blocker, with the exact UI message;
+   - pre-existing items that aren't in the RR;
+   - held discount codes;
+   - what is left for a human, including publishing.
 
 ## Browser: drivers and guards
 
@@ -192,7 +212,7 @@ Write `qa.md` with pass or fail per check. Then send the user one final report c
    - `python3 cvent-builds/tools/cvent_pw.py snapshot` gives numbered refs (`p12`, `f1p3`) for every control in every frame, plus the page text.
    - `echo '{"steps":[{"kind":"select","ref":"p4","value":"Eastern"}]}' | python3 cvent-builds/tools/cvent_pw.py act` runs steps, stops at the first failure and returns a fresh snapshot.
    - Refs are valid only until the next snapshot.
-   - It refuses publish, delete and send controls, and password fields, and it drives only a Cvent tab.
+   - It refuses publish, delete and send controls, and password and secret fields, and it drives only a Cvent tab. Field values never appear as element names, and secret-looking fields show only `***`.
    - It attaches to the Team Computer's Chrome. Under the Ego provider that Chrome isn't signed in, so it answers "No Cvent tab": go to `request_takeover` instead, unless the user gave a DevTools endpoint for this run (`CVENT_PW_CDP=<url> python3 …`).
 3. **Desktop** (`computer_observe` / `computer_act`). Only with an image from this step.
 
@@ -211,20 +231,7 @@ Fix wrong lines instead of adding contradictions. Never record event data, IDs o
 
 ## Appendix C: snippets (shell, `cwd: "shared"`, replace `<FP>`)
 
-**C1 Fee check.**
-```bash
-python3 - <<'EOF'
-import json
-plan=json.load(open("cvent-builds/<FP>/plan.json"))["registration"]
-seen=json.load(open("cvent-builds/<FP>/fees_readback.json"))
-bad=[(k,v,seen.get(k)) for rt in plan["reg_types"] for item,d in rt["admission_items"].items()
-     for tier,v in d["prices"].items() if str(v).replace('.','',1).isdigit()
-     for k in [f"{rt['code']}|{item}|{tier}"] if str(seen.get(k)) not in (str(v), f"{float(v):.2f}")]
-print("fee mismatches:", bad or "none")
-EOF
-```
-
-**C2 Discount work file.**
+**C2 Discount work file** (held codes go to `discount_blocked.json`, never to the UI).
 ```bash
 python3 - <<'EOF'
 import json, os, re
@@ -237,26 +244,33 @@ A={"invitees and guests":"ALL","invitees":"PRIMARY","guests":"GUEST","":"ALL"}
 iso=lambda v: v[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}( .*)?", v or "") else None
 out, held = [], []
 for c in plan["discounts"]["codes"]:
-    items, types, unmapped, plain = [], [], [], []
+    items, why = [], []
     for code in c["admission_items"]:
-        if code in cmap: items.append(cmap[code]["admission_item"]); types += cmap[code]["reg_types"]
-        elif code in known: items.append(code); plain.append(code)
-        else: unmapped.append(code)
-    if unmapped or (types and plain) or c["method"] not in M:
-        held.append({"code":c["code"],"unmapped":unmapped,"mixed_with":plain if types else [],"method":c["method"],"source":c["source"]}); continue
+        m = cmap.get(code)
+        if m and m.get("reg_types"): why.append(f"{code}: needs a reg-type limit")
+        elif m: items.append(m["admission_item"])
+        elif code in known: items.append(code)
+        else: why.append(f"{code}: not an admission item")
+    if c["method"] not in M: why.append(f"method {c['method']!r}")
+    if not re.fullmatch(r"\d+(\.\d+)?", str(c["amount"])): why.append(f"amount {c['amount']!r}")
+    if why:
+        held.append({"code":c["code"],"why":why,"source":c["source"]}); continue
     s={"code":c["code"],"name":(c["name"] or c["code"])[:50],"method":M[c["method"]],"value":float(c["amount"]),
-       "active":c["active"] and not types,"stackable":c["stackable"],
+       "active":c["active"],"stackable":c["stackable"],
        "capacity":int(c["capacity"]) if str(c["capacity"]).isdigit() else -1,
        "audience":A.get(c["usable_by"].lower(),"ALL"),"includeGuestsTowardsCapacity":not c["count_guests"].lower().startswith("no"),
        "admissionItems":list(dict.fromkeys(items)),"source":c["source"]}
     for k,v in (("effectiveFrom",iso(c["effective_from"])),("effectiveTo",iso(c["effective_to"]))):
         if v: s[k]=v
-    note=(c["internal_note"]+(f" | limit to reg types: {','.join(dict.fromkeys(types))}" if types else "")).strip(" |")
-    if note: s["note"]=note[:300]
+    name=c["name"] or c["code"]
+    note=" | ".join(x for x in ((f"RR name: {name}" if len(name)>50 else ""), c["internal_note"]) if x)
+    if len(note)>300: held.append({"code":c["code"],"why":["name and note exceed Cvent's limits"],"source":c["source"]}); continue
+    if note: s["note"]=note  # Cvent names stop at 50 characters; the full RR name rides in the note
     out.append(s)
 json.dump({"discounts":out},open("cvent-builds/<FP>/discounts_api.json","w"),indent=1)
 json.dump(held,open("cvent-builds/<FP>/discount_blocked.json","w"),indent=1)
-print(len(out),"in work file ·",len(held),"held (see discount_blocked.json)")
+print(len(out),"in work file ·",len(held),"held (see discount_blocked.json) ·",
+      sum(len(x["name"])==50 and "RR name:" in x.get("note","") for x in out),"names shortened to 50 (full name in the note)")
 EOF
 ```
 
@@ -272,7 +286,7 @@ a,b=sorted([L(sys.argv[1]),L(sys.argv[2])],reverse=True); print(round((a+0.05)/(
 
 ## Appendix B: cvent_pw.py
 
-```python
+```python file=shared/cvent-builds/tools/cvent_pw.py
 #!/usr/bin/env python3
 """Playwright fallback for the bot computer's signed-in Chrome (same session, via CDP).
 
@@ -297,7 +311,7 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
 
-PW_VERSION = 2
+PW_VERSION = 3
 FORBIDDEN = re.compile(
     r"\b(publish|go live|launch|un-?publish|delete|remove|archive|cancel event|send|"
     r"invite|email (now|attendees)|activate event)\b",
@@ -311,6 +325,21 @@ MARK = """
   const sel = 'a,button,input,select,textarea,[role=button],[role=link],[role=tab],[role=menuitem],' +
     '[role=option],[role=checkbox],[role=radio],[role=combobox],[role=switch],[contenteditable=true],' +
     '[draggable=true],[role=treeitem],label';
+  // Field values never become names; secret-looking fields never show a value at all.
+  const SECRET = /pass|secret|token|otp|one-time|pin\b|cvv|card|ssn|api.?key/i;
+  const isField = el => ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable;
+  const secret = el => el.type === 'password' ||
+    SECRET.test([el.name, el.id, el.autocomplete, el.getAttribute('aria-label'), el.placeholder].join(' '));
+  const nameOf = el => {
+    const aria = el.getAttribute('aria-label');
+    if (aria && aria.trim()) return aria;
+    if (isField(el)) {
+      const label = el.labels && el.labels[0] ? el.labels[0].innerText : '';
+      if (['submit', 'button', 'reset'].includes(el.type)) return el.value || label;
+      return label || el.placeholder || el.title || el.name || '';
+    }
+    return el.innerText || el.title || '';
+  };
   let i = 0;
   for (const el of document.querySelectorAll(sel)) {
     const r = el.getBoundingClientRect();
@@ -318,12 +347,11 @@ MARK = """
     if (r.width < 2 || r.height < 2 || st.visibility === 'hidden' || st.display === 'none') continue;
     const ref = prefix + (i++);
     el.setAttribute('data-cvent-ref', ref);
-    const name = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder ||
-                  el.title || el.name || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+    const name = (nameOf(el) || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
     const item = { ref, tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || '', name };
     if (el.type) item.type = el.type;
-    if (el.type === 'password') item.value = '***';
-    else if ('value' in el && el.tagName !== 'BUTTON' && el.value) item.value = String(el.value).slice(0, 80);
+    if (secret(el)) { if (el.value) item.value = '***'; }
+    else if (isField(el) && el.value) item.value = String(el.value).slice(0, 80);
     if (el.tagName === 'SELECT') item.options = [...el.options].slice(0, 40).map(o => o.label);
     if (el.disabled) item.disabled = true;
     if (el.checked) item.checked = true;
@@ -388,7 +416,9 @@ def locate(page, ref):
 def guard(loc, kind):
     if kind not in ("click", "check"):
         return
-    label = loc.evaluate("el => (el.getAttribute('aria-label') || el.innerText || el.value || '').trim()")
+    label = loc.evaluate(
+        "el => (el.getAttribute('aria-label') || el.innerText || "
+        "(['submit', 'button', 'reset'].includes(el.type) ? el.value : '') || '').trim()")
     if FORBIDDEN.search(label or ""):
         raise PermissionError(f"refused: '{label[:60]}' looks like publish/delete/send; a human must do this")
 
@@ -409,8 +439,9 @@ def run_step(page, step):
     if kind == "click":
         loc.click(timeout=10000)
     elif kind == "fill":
-        if loc.get_attribute("type") == "password":
-            raise PermissionError("refused: password fields are filled only with fill_secret")
+        if loc.evaluate("el => el.type === 'password' || /pass|secret|token|otp|one-time|cvv|api.?key/i"
+                        ".test([el.name, el.id, el.autocomplete, el.getAttribute('aria-label')].join(' '))"):
+            raise PermissionError("refused: password and secret fields are filled only with fill_secret")
         loc.fill(str(step.get("text", "")), timeout=10000)
     elif kind == "select":
         value = step.get("value")
@@ -468,15 +499,20 @@ if __name__ == "__main__":
 
 ## Appendix A: rr.py
 
-```python
+```python file=shared/cvent-builds/tools/rr.py
 #!/usr/bin/env python3
 """RR workbook -> Cvent build plan. Read-only; never touches Cvent.
 
-  python3 rr.py extract  <rr.xlsx> <dir>   every sheet as tables -> extract.json, inventory.md
+  python3 rr.py extract  <rr.xlsx> <dir>   every sheet as tables -> extract.json, inventory.md, cells.json
   python3 rr.py plan     <dir>             known layouts -> plan.json, plan.md (+ merges agent_plan.json)
   python3 rr.py validate <dir>             checks plan.json -> validation.md; exit 1 on errors
   python3 rr.py images   <rr.xlsx> <dir>   embedded images -> assets/, assets.json (tab, cell, template flag)
+  python3 rr.py expect   <dir> [--test-target]  one check per planned value -> expected.json, readback.json
+  python3 rr.py verify   <dir>             readback.json vs expected.json -> qa.md, qa.json; exit 1 unless complete
 
+Nothing is dropped: cells.json holds every non-empty cell exactly as stored (value,
+number format, hyperlink, comment). Plan values keep the cell's text verbatim
+except leading and trailing whitespace; matching alone ignores case and spacing.
 Columns are found by header text, never fixed letters. Layouts the planner does
 not recognise are marked needs_mapping in plan.json `coverage`, with the
 extracted rows attached, for the agent to map into agent_plan.json.
@@ -489,11 +525,12 @@ import posixpath
 import re
 import sys
 import zipfile
+from decimal import Decimal
 
 import openpyxl
 from openpyxl.utils import get_column_letter
 
-PARSER_VERSION = 5
+PARSER_VERSION = 6
 
 EXCLUDE_TITLE = re.compile(r"\bold\b|dnu|do.?not.?use|archive|for ko\b", re.I)
 PLACEHOLDER = re.compile(r"^\[.*\]$")
@@ -524,18 +561,52 @@ def norm(v):
     return re.sub(r"[ \t]+", " ", s).strip()
 
 
+def key(v):
+    """Matching only: case, spacing, non-breaking spaces and the 'Â' encoding artifact ignored."""
+    return re.sub(r"\s+", " ", str(v).replace("Â\xa0", " ").replace("\xa0", " ")).strip().lower()
+
+
+def decimal_text(d):
+    t = format(d, "f")
+    return t.rstrip("0").rstrip(".") if "." in t else t
+
+
+def text(c):
+    """A cell as plan text: strings verbatim (outer whitespace removed), numbers exact
+    (percent-formatted cells as percentage points with '%'), dates ISO."""
+    v = c.value
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, (int, float)):
+        d = Decimal(repr(v)) if isinstance(v, float) else Decimal(v)
+        return decimal_text(d * 100) + "%" if "%" in (c.number_format or "") else decimal_text(d)
+    if isinstance(v, datetime.datetime):
+        return v.date().isoformat() if v.time() == datetime.time(0) else v.isoformat(sep=" ")
+    if isinstance(v, (datetime.date, datetime.time)):
+        return v.isoformat()
+    return str(v).strip()
+
+
 def blank(v):
-    return norm(v).lower() in NA or bool(PLACEHOLDER.match(norm(v)))
+    return key(v) in NA or bool(PLACEHOLDER.match(key(v)))
 
 
 def yes(v):
-    return norm(v).lower() in ("y", "yes", "x", "true", "activate", "required", "both")
+    return key(v) in ("y", "yes", "x", "true", "activate", "required", "both")
 
 
 def money(v):
-    """'$1,008' -> '1008'; free text -> None (caller keeps raw)."""
+    """'$1,008' -> '1008'; '15%' -> '15'; free text -> None (caller keeps raw).
+    Binary float noise (99.99000000000001) is rounded off; real fractions of a cent are kept."""
     s = norm(v).replace("$", "").replace(",", "").strip()
-    return s if re.fullmatch(r"\d+(\.\d+)?", s) else None
+    if s.endswith("%"):
+        s = s[:-1].strip()
+    if not re.fullmatch(r"\d+(\.\d+)?", s):
+        return None
+    d, q = Decimal(s), Decimal(s).quantize(Decimal("0.01"))
+    return decimal_text(q) if d != q and abs(d - q) < Decimal("1e-9") else s
 
 
 def initials(text):
@@ -588,6 +659,7 @@ def parse_range(text, year_hint):
     yb = b[0] or (a[0] if a and a[0] else year_hint)
     if yb is None:
         return None
+    inferred = not b[0] or bool(a and not a[0])
     if a:
         ya = a[0] or (yb if (a[1], a[2]) <= (b[1], b[2]) else yb - 1)
         start = datetime.date(ya, a[1], a[2])
@@ -596,7 +668,7 @@ def parse_range(text, year_hint):
     end = datetime.date(yb, b[1], b[2])
     if start and start > end:
         return None
-    return (start.isoformat() if start else None, end.isoformat())
+    return (start.isoformat() if start else None, end.isoformat(), "year not written; event year used" if inferred else "")
 
 
 # ------------------------------------------------------------------ extract
@@ -687,11 +759,47 @@ def classify(ws):
         return "items"
     if re.search(r"reg(istration)?\s*type|pricing", t):
         return "reg_types"
-    for key in ("communication", "polic", "approval", "integration", "badge", "onsite", "access", "reference",
+    for word in ("communication", "polic", "approval", "integration", "badge", "onsite", "access", "reference",
                 "evaluation"):
-        if key in t:
-            return key
+        if word in t:
+            return word
     return "unclassified"
+
+
+def rows_of(ws, min_row=1, max_row=None):
+    """Rows that hold a value, hyperlink or comment, in order. Reads stored cells only, so
+    sheets formatted down to row 1,048,576 cost nothing extra."""
+    if not hasattr(ws, "_rr_rows"):
+        by_row = {}
+        for (r, _), c in ws._cells.items():
+            if c.value is not None or c.hyperlink is not None or c.comment is not None:
+                by_row.setdefault(r, []).append(c)
+        ws._rr_rows = [sorted(by_row[r], key=lambda c: c.column) for r in sorted(by_row)]
+    for row in ws._rr_rows:
+        if row[0].row >= min_row and (max_row is None or row[0].row <= max_row):
+            yield row
+
+
+def record(row):
+    """One sheet row: verbatim text per column, plus hyperlinks and comments."""
+    cells, links, notes = {}, {}, {}
+    for c in row:
+        col = get_column_letter(c.column)
+        t = text(c)
+        if t and t != "`":
+            cells[col] = t
+        if c.hyperlink is not None and (c.hyperlink.target or c.hyperlink.location):
+            links[col] = c.hyperlink.target or f"#{c.hyperlink.location}"
+        if c.comment is not None:
+            notes[col] = c.comment.text
+    if not (cells or links or notes):
+        return None
+    out = {"row": row[0].row, "cells": cells}
+    if links:
+        out["links"] = links
+    if notes:
+        out["comments"] = notes
+    return out
 
 
 def table(ws, role):
@@ -709,33 +817,31 @@ def table(ws, role):
         return None
     hrows = header_rows_of(ws, anchor)
     headers = compose_headers(ws, hrows)
-    records, empty_run = [], 0
-    for row in ws.iter_rows(min_row=max(hrows) + 1):
-        cells = {c.column: norm(c.value) for c in row if norm(c.value) and norm(c.value) != "`"}
-        if not cells:
-            empty_run += 1
-            if empty_run >= 15 and records:  # what follows is dropdown source lists, not data
-                break
+    preamble = [r for r in (record(row) for row in rows_of(ws, 1, min(hrows) - 1)) if r]
+    records, trailing, last = [], [], max(hrows)
+    for row in rows_of(ws, max(hrows) + 1):
+        rec = record(row)
+        if not rec:
             continue
-        empty_run = 0
-        records.append({"row": row[0].row, "cells": {get_column_letter(k): v for k, v in cells.items()}})
+        if not rec["cells"]:  # hyperlink or comment only
+            (trailing if trailing else records).append(rec)
+            continue
+        # after 15+ blank rows come dropdown source lists: kept as evidence, not read as data
+        (trailing if trailing or (records and rec["row"] - last > 15) else records).append(rec)
+        last = rec["row"]
     return {"anchor_row": anchor, "header_rows": hrows,
-            "headers": {get_column_letter(c): h for c, h in headers.items()}, "records": records}
+            "headers": {get_column_letter(c): h for c, h in headers.items()},
+            "preamble": preamble, "records": records, "trailing": trailing}
 
 
-def raw_rows(ws, limit=400):
-    out = []
-    for row in ws.iter_rows(max_row=limit):
-        cells = {get_column_letter(c.column): norm(c.value) for c in row if norm(c.value)}
-        if cells:
-            out.append({"row": row[0].row, "cells": cells})
-    return out
+def raw_rows(ws):
+    return [r for r in (record(row) for row in rows_of(ws)) if r]
 
 
 def lookup_tables(ws):
     """Small reference lists inside a sheet, e.g. 'Admission Items | CODES' or 'REG TYPES | REG CODES'."""
     found = {}
-    for row in ws.iter_rows(max_row=ws.max_row):
+    for row in rows_of(ws):
         for c in row:
             v = norm(c.value).lower()
             if v in ("codes", "reg codes"):
@@ -744,13 +850,41 @@ def lookup_tables(ws):
                 kind = "admission_items" if "admission" in label else "reg_types" if "reg" in label else None
                 if not kind:
                     continue
-                pairs = {}
-                for r in range(c.row + 1, min(ws.max_row, c.row + 80) + 1):
-                    name, code = norm(ws.cell(r, label_col).value), norm(ws.cell(r, c.column).value)
+                pairs, empty = {}, 0
+                for r in range(c.row + 1, ws.max_row + 1):
+                    name, code = text(ws.cell(r, label_col)), text(ws.cell(r, c.column))
+                    if not name and not code:
+                        empty += 1
+                        if empty >= 15:
+                            break
+                        continue
+                    empty = 0
                     if name and code:
                         pairs[name.split("\n")[0].strip()] = code
                 found[kind] = pairs
     return found
+
+
+def evidence(wb):
+    """Every non-empty cell exactly as stored (cached values, as Excel last showed them),
+    for citing and checking any plan value."""
+    out = []
+    for ws in wb.worksheets:
+        cells = {}
+        for row in rows_of(ws):
+            for c in row:
+                v = c.value
+                e = {"v": v.isoformat() if isinstance(v, (datetime.date, datetime.time)) else v}
+                if c.number_format and c.number_format != "General":
+                    e["format"] = c.number_format
+                if c.hyperlink is not None:
+                    e["link"] = c.hyperlink.target or f"#{c.hyperlink.location}"
+                if c.comment is not None:
+                    e["comment"] = c.comment.text
+                cells[c.coordinate] = e
+        out.append({"title": ws.title, "state": ws.sheet_state,
+                    "merged": [str(r) for r in ws.merged_cells.ranges], "cells": cells})
+    return out
 
 
 def extract(path, out_dir):
@@ -760,8 +894,11 @@ def extract(path, out_dir):
         role = classify(ws)
         entry = {"title": ws.title, "state": ws.sheet_state, "role": role,
                  "excluded": bool(EXCLUDE_TITLE.search(ws.title)) or ws.sheet_state != "visible"}
+        artifacts = [c.coordinate for row in rows_of(ws) for c in row if isinstance(c.value, str) and "Â" in c.value]
+        if artifacts:
+            entry["encoding_artifacts"] = artifacts
         if role in ("event_details", "links"):
-            entry["rows"] = raw_rows(ws, 200)
+            entry["rows"] = raw_rows(ws)
         elif role in ("reg_types", "reg_mapping", "discounts", "questions", "items", "vouchers"):
             entry["table"] = table(ws, role)
             entry["lookups"] = lookup_tables(ws) if role == "reg_types" else {}
@@ -774,6 +911,8 @@ def extract(path, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "extract.json"), "w") as f:
         json.dump(ext, f, indent=1)
+    with open(os.path.join(out_dir, "cells.json"), "w") as f:
+        json.dump({"source_file": ext["source_file"], "sheets": evidence(wb)}, f, default=str)
     lines = [f"# Inventory: {ext['source_file']}", "", "| Sheet | Role | Used | Header rows | Data rows |", "|---|---|---|---|---|"]
     for s in sheets:
         t = s.get("table")
@@ -904,7 +1043,7 @@ def kv_rows(rows):
     for r in rows:
         c = r["cells"]
         if c.get("A"):
-            out.append((c["A"].lower(), c.get("B", ""), c.get("C", ""), r["row"]))
+            out.append((key(c["A"]), c.get("B", ""), c.get("C", ""), r["row"]))
     return out
 
 
@@ -930,6 +1069,8 @@ def plan_event(ctx):
     ctx.year = int(m.group(1)) if m else None
     ends = [parse_range(part, ctx.year) for part in re.split(r" / |\n", dates)]
     ends = [e[1] for e in ends if e]
+    if any(e and e[2] for e in [parse_range(part, ctx.year) for part in re.split(r" / |\n", dates)]):
+        ctx.gap(f"Event dates '{dates}' do not all carry a year; the event year was used.")
     if not ends:  # "November 13 - 15, 2026"
         mm = re.search(r"([A-Za-z]+)\.?\s+\d{1,2}\s*-\s*(?:([A-Za-z]+)\.?\s+)?(\d{1,2}),?\s*(\d{4})", dates)
         if mm and mm.group(1).lower()[:3] in MONTHS:
@@ -980,7 +1121,10 @@ def plan_website(ctx, pairs):
         for r in s["rows"]:
             c = r["cells"]
             a, b, url = c.get("A", ""), c.get("B", ""), c.get("C", "")
-            al = a.lower()
+            link = r.get("links", {}).get("C", "")
+            if link and not re.match(r"(?i)^(https?://|mailto:)", url):
+                url = link  # the cell shows a label; the hyperlink holds the address
+            al = key(a)
             m = re.match(r"footer options\s*-\s*(.+)", al)
             if m:
                 section = ("footer", m.group(1).strip())
@@ -998,7 +1142,7 @@ def plan_website(ctx, pairs):
                 mail = re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", url)
                 link = {"label": re.sub(r"\s*\(.*?only\)\s*", "", a.split("\n")[0]).strip(), "visible": yes(b),
                         "url": url if url.startswith("http") else (f"mailto:{mail.group(0)}" if mail else
-                                                                   "cvent-generated" if "cvent will provide" in url.lower() else ""),
+                                                                   "cvent-generated" if "cvent will provide" in key(url) else ""),
                         "source": ref(s["title"], r["row"])}
                 if link["visible"] and not link["url"]:
                     ctx.gap(f"Footer link '{link['label']}' ({section[1]}) is Yes but has no URL ({link['source']}).")
@@ -1008,7 +1152,7 @@ def plan_website(ctx, pairs):
                     countdown["enabled"] = yes(b)
                 elif "text" in al:
                     countdown["label"] = b
-            elif section and section[0] == "social" and url.startswith("http") and norm(b).lower() not in ("no", "n"):
+            elif section and section[0] == "social" and url.startswith("http") and key(b) not in ("no", "n"):
                 social.append({"network": a, "url": url, "source": ref(s["title"], r["row"])})
     first_day = None
     m = re.search(r"([A-Za-z]+)\.?\s+(\d{1,2})\b.*?(\d{4})", ctx_dates := g("event dates") or g("expo hall dates") or g("conference dates"))
@@ -1060,7 +1204,7 @@ def price_columns(ctx, headers, after=None, stop_patterns=(r"reprint", r"gl code
             for sub in [x.strip() for x in re.split(r" / |\n", p) if x.strip()]:
                 rng = parse_range(sub, ctx.year)
                 if not rng and re.search(r"(?i)open\s*-\s*(show|event) close", sub) and ctx.event_end:
-                    rng = (None, ctx.event_end)
+                    rng = (None, ctx.event_end, "end is the event's last day ('show close')")
                 if rng and not window:
                     window = rng
                 elif not re.fullmatch(r"(?i)price tier \d+", sub) and not re.search(r"\d+/\d+", sub) \
@@ -1073,14 +1217,15 @@ def price_columns(ctx, headers, after=None, stop_patterns=(r"reprint", r"gl code
                      "raw": h, "tier_hint": (re.search(r"(?i)price tier (\d+)", h) or [None, None])[1]})
     tiers = []
     for c in cols:
-        key = (c["label"], c["window"]) if c["window"] or c["label"] else (c["raw"], None)
-        t = next((t for t in tiers if t["_key"] == key), None)
+        tkey = (c["label"], c["window"][:2] if c["window"] else None) if c["window"] or c["label"] else (c["raw"], None)
+        t = next((t for t in tiers if t["_key"] == tkey), None)
         if not t:
             name = c["label"] or (f"Tier {c['tier_hint']}" if c["tier_hint"] else f"Tier {len(tiers) + 1}")
             if c["window"] and not c["label"]:
                 name = f"Tier {c['tier_hint'] or len(tiers) + 1}"
-            t = {"_key": key, "name": name, "start": c["window"][0] if c["window"] else None,
-                 "end": c["window"][1] if c["window"] else None, "header": c["raw"]}
+            t = {"_key": tkey, "name": name, "start": c["window"][0] if c["window"] else None,
+                 "end": c["window"][1] if c["window"] else None, "header": c["raw"],
+                 "inferred": c["window"][2] if c["window"] else ""}
             tiers.append(t)
         c["tier"] = t["name"]
     return cols, tiers
@@ -1109,7 +1254,9 @@ def finish_tiers(ctx, tiers, used, where):
             continue
         if not t["end"]:
             ctx.gap(f"{where}: price tier '{t['name']}' has no readable date window ('{t['header']}').")
-        out.append({k: t[k] for k in ("name", "start", "end")})
+        out.append({k: t[k] for k in ("name", "start", "end")} | ({"inferred": t["inferred"]} if t.get("inferred") else {}))
+        if t.get("inferred"):
+            ctx.gap(f"{where}: tier '{t['name']}' dates — {t['inferred']} (header '{t['header']}'); confirm.")
     for a, b in zip(out, out[1:]):
         if a["end"] and b["start"]:
             d = (datetime.date.fromisoformat(b["start"]) - datetime.date.fromisoformat(a["end"])).days
@@ -1172,7 +1319,7 @@ def plan_registration(ctx):
         ctx.gap(f"'{title}' has no ACTIVATE column; every row with a code is treated as active.")
     if not new_format:
         return {"source_sheet": title, "layout": "legacy", "headers": H, "lookups": s.get("lookups", {}),
-                "rows": t["records"][:400], "mapping": [m.get("table") for m in ctx.sheets("reg_mapping")]}, "needs_mapping"
+                "rows": t["records"], "mapping": [m.get("table") for m in ctx.sheets("reg_mapping")]}, "needs_mapping"
 
     C = {"code": code_c, "status": status_c, "ai": ai_c,
          "name": hcol(H, r"reg type name"), "old": hcol(H, r"old reg type|current cvent reg|current reg type"),
@@ -1183,7 +1330,7 @@ def plan_registration(ctx):
          "pre": hcol(H, r"pre-approval"), "adv": hcol(H, r"advanced pre-reg"), "reprint": hcol(H, r"reprint"),
          "gl": hcol(H, r"gl code"), "notes": hcol(H, r"^notes|\| notes")}
     pcols, tiers = price_columns(ctx, H)
-    lookup = {k.lower(): v for k, v in s.get("lookups", {}).get("admission_items", {}).items()}
+    lookup = {key(k): v for k, v in s.get("lookups", {}).get("admission_items", {}).items()}
     reg_types, items, paths, skipped, used = {}, {}, {}, [], set()
     for rec in t["records"]:
         cells, row = rec["cells"], rec["row"]
@@ -1199,10 +1346,10 @@ def plan_registration(ctx):
         if re.search(r"\s", code.strip()):
             ctx.gap(f"{where}: reg code cell holds more than one code ('{code}'); split it during review.")
             code = code.split()[-1]
-        aic = v("ai_code").strip() or lookup.get(ai.lower(), "")
+        aic = v("ai_code").strip() or lookup.get(key(ai), "")
         if not aic:
             near = [f"{n} = {c}" for n, c in s.get("lookups", {}).get("admission_items", {}).items()
-                    if ai and (n.lower().startswith(ai.lower()) or ai.lower().startswith(n.lower()))]
+                    if ai and (key(n).startswith(key(ai)) or key(ai).startswith(key(n)))]
             ctx.gap("admission item has no code; confirm one in review",
                     f"'{ai}' ({ref(title, row)}{'; RR list suggests ' + ', '.join(near) if near else ''})")
             aic = ai
@@ -1210,18 +1357,18 @@ def plan_registration(ctx):
         used.update(prices)
         rt = reg_types.setdefault(code, {
             "code": code, "name": v("name") or code, "labels": [], "path": v("path"),
-            "web_visible": "staff only" not in v("method").lower(), "method": v("method"), "status": status,
+            "web_visible": "staff only" not in key(v("method")), "method": v("method"), "status": status,
             "group_registration": False, "approval": False, "pre_approval": False, "advanced_prereg": False,
             "badge_text": [], "admission_items": {}, "source": ref(title, row)})
         if v("old") and v("old") not in rt["labels"]:
             rt["labels"].append(v("old"))
         if v("badge") and v("badge") not in rt["badge_text"]:
             rt["badge_text"].append(v("badge"))
-        for flag, key in (("group_registration", "group"), ("approval", "approval"), ("pre_approval", "pre"),
+        for flag, col in (("group_registration", "group"), ("approval", "approval"), ("pre_approval", "pre"),
                           ("advanced_prereg", "adv")):
-            if rt["admission_items"] and rt[flag] != yes(v(key)):
+            if rt["admission_items"] and rt[flag] != yes(v(col)):
                 ctx.gap(f"{where}: '{flag}' differs between this reg type's rows; set to Yes, confirm.")
-            rt[flag] = rt[flag] or yes(v(key))
+            rt[flag] = rt[flag] or yes(v(col))
         if aic in rt["admission_items"] and rt["admission_items"][aic]["prices"] != prices:
             ctx.gap(f"{where}: admission item {aic} listed twice with different prices; first row kept.")
         rt["admission_items"].setdefault(aic, {"prices": prices, "reprint_fee": v("reprint"), "gl_code": v("gl"),
@@ -1233,8 +1380,12 @@ def plan_registration(ctx):
         if code not in it["reg_types"]:
             it["reg_types"].append(code)
         if v("path"):
-            p = paths.setdefault(v("path"), {"name": v("path"), "reg_types": [], "web_visible": False,
-                                             "group_registration": False})
+            p = paths.setdefault(key(v("path")), {"name": v("path"), "reg_types": [], "web_visible": False,
+                                                  "group_registration": False})
+            if v("path") != p["name"]:
+                ctx.gap("path name is spelled differently across rows; the first spelling is used",
+                        f"'{v('path')}' vs '{p['name']}' ({ref(title, row)})")
+            rt["path"] = p["name"]
             if code not in p["reg_types"]:
                 p["reg_types"].append(code)
             p["web_visible"] = p["web_visible"] or rt["web_visible"]
@@ -1353,13 +1504,15 @@ def plan_discounts(ctx, reg, keep_test):
                 if v("method") and not method:
                     ctx.gap(f"discount method '{v('method')}' is not a Cvent method", ref(title, row))
                 amount = money(v("amount"))
+                if v("amount").endswith("%") and method and method != "Subtract a percentage":
+                    ctx.gap("discount amount is a percent but the method is not a percentage", f"{code} ({ref(title, row)})")
                 if amount is None:
                     ctx.gap("discount amount is not a number", f"{code} '{v('amount')}' ({ref(title, row)})")
                 codes.append({"sheet": title, "group": group, "name": name, "code": code, "type": v("type"),
                               "method": method, "amount": amount if amount is not None else v("amount"),
                               "effective_from": v("from"), "effective_to": v("to"), "capacity": v("capacity"),
                               "stackable": yes(v("stackable")), "usable_by": v("usable"), "count_guests": v("guests"),
-                              "active": v("active").lower() != "no", "internal_note": v("note"),
+                              "active": key(v("active")) != "no", "internal_note": v("note"),
                               "admission_items": [x.strip() for x in re.split(r"[,\n]", v("items")) if x.strip()],
                               "sessions": v("sessions"), "optional_items": v("optional"),
                               "raw": {H[k]: c.get(k, "") for k in H}, "source": ref(title, row)})
@@ -1492,9 +1645,9 @@ def merge_agent(plan, out_dir):
     reg = plan.setdefault("registration", {})
     patch = agent.pop("registration", {})
     plan["agent_notes"] = agent.pop("notes", "")
-    for key in ("reg_types", "admission_items", "paths", "price_tiers"):
-        if key in patch:
-            reg[key] = patch[key]
+    for section in ("reg_types", "admission_items", "paths", "price_tiers"):
+        if section in patch:
+            reg[section] = patch[section]
             reg["layout"] = "agent"
     for old, new in patch.get("admission_item_codes", {}).items():
         for it in reg.get("admission_items", []):
@@ -1535,9 +1688,9 @@ def merge_agent(plan, out_dir):
             for rt in reg["reg_types"] if set(rt["admission_items"]) != codes]
     if patch:
         plan["coverage"]["registration"] = "agent" if reg.get("layout") == "agent" else "parsed+agent"
-    for key, val in agent.items():
-        plan[key] = val
-        plan["coverage"][key] = "agent"
+    for section, val in agent.items():
+        plan[section] = val
+        plan["coverage"][section] = "agent"
 
 
 def build_plan(out_dir, keep_test=False):
@@ -1565,6 +1718,11 @@ def build_plan(out_dir, keep_test=False):
     if any(s["role"] == "unclassified" and not s["excluded"] and s.get("rows") for s in ext["sheets"]):
         names = [s["title"] for s in ext["sheets"] if s["role"] == "unclassified" and not s["excluded"] and s.get("rows")]
         ctx.gap(f"Unclassified tabs with content (review by hand): {', '.join(names)}.")
+    for sh in ext["sheets"]:
+        if sh.get("encoding_artifacts") and not sh["excluded"]:
+            refs = sh["encoding_artifacts"]
+            ctx.gap(f"'{sh['title']}' has text with the 'Â' encoding artifact ({', '.join(refs[:5])}"
+                    f"{'…' if len(refs) > 5 else ''}); it is typed as written unless corrected in review.")
     if plan["family"] == "ambiguous":
         ctx.ask("Workbook family is ambiguous (A vs B); confirm which approval/sessions tabs apply.")
     plan["gaps"], plan["open_questions"] = ctx.all_gaps(), ctx.questions
@@ -1647,7 +1805,7 @@ def validate(out_dir):
     items = {i["code"]: i for i in reg.get("admission_items", [])}
     by_name = {}
     for i in items.values():
-        by_name.setdefault(i["name"].strip().lower(), []).append(i["code"])
+        by_name.setdefault(key(i["name"]), []).append(i["code"])
     for name, codes in by_name.items():
         if len(codes) > 1:
             W("registration", f"Admission item name '{name}' is shared by codes {codes}; confirm they are distinct items "
@@ -1690,6 +1848,8 @@ def validate(out_dir):
                 for x in vals:
                     if isinstance(x, dict) or x is None or not re.fullmatch(r"\d+(\.\d+)?", str(x)):
                         E("registration", f"Reg type {c} / {aic} / {tier}: price {x!r} is not a number.")
+                    elif re.fullmatch(r"\d+\.\d{3,}", str(x)):
+                        E("registration", f"Reg type {c} / {aic} / {tier}: price {x} has fractions of a cent.")
     import difflib
     names = list(paths)
     for i, a in enumerate(names):
@@ -1714,6 +1874,9 @@ def validate(out_dir):
             E("discounts", f"Discount {d['code']} ({d['source']}): amount {d.get('amount')!r} is not a number.")
         if not d.get("method"):
             E("discounts", f"Discount {d['code']} ({d['source']}): no usable method.")
+        elif d["method"] == "Subtract a percentage" and re.fullmatch(r"\d+(\.\d+)?", str(d.get("amount", ""))) \
+                and not 0 < float(d["amount"]) <= 100:
+            E("discounts", f"Discount {d['code']} ({d['source']}): {d['amount']}% is not a percentage between 0 and 100.")
         if known and [c for c in d["admission_items"] if c not in known and c not in cmap]:
             blocked.append(d["code"])
     if blocked:
@@ -1745,6 +1908,216 @@ def validate(out_dir):
     return 1 if total else 0
 
 
+# ------------------------------------------------------------------ QA: expect + verify
+
+def ws(v):
+    """Comparison text: spacing and non-breaking spaces ignored, case kept."""
+    return re.sub(r"\s+", " ", str(v).replace("Â\xa0", " ").replace("\xa0", " ")).strip()
+
+
+def expected_checks(p, out_dir, test_target=False):
+    """One check per value the build puts in Cvent. Kinds: text, code, money, date, bool, set, list,
+    contains (all parts appear), judge (needs {"observed", "ok"}), not_live, discount."""
+    C = []
+    add = lambda cid, section, kind, exp, src="": C.append(
+        {"id": cid, "section": section, "kind": kind, "expected": exp, **({"source": src} if src else {})})
+    ev = p.get("event", {})
+    add("event|status", "identity", "not_live", "not launched or published")
+    if not test_target:
+        for f, kind in (("name", "text"), ("fp_code", "code")):
+            if ev.get(f):
+                add(f"event|{f}", "identity", kind, ev[f])
+        for f in ("timezone", "location", "dates_display"):
+            if ev.get(f):
+                add(f"event|{f}", "identity", "judge", ev[f])
+    reg = p.get("registration", {})
+    if reg.get("layout") != "legacy":
+        for t in reg.get("price_tiers", []):
+            for f in ("start", "end"):
+                if t.get(f):
+                    add(f"tier|{t['name']}|{f}", "registration", "date", t[f])
+        for x in reg.get("paths", []):
+            add(f"path|{x['name']}|reg_types", "registration", "set", x["reg_types"])
+            add(f"path|{x['name']}|public", "registration", "bool", bool(x.get("web_visible")))
+            add(f"path|{x['name']}|group_registration", "registration", "bool", bool(x.get("group_registration")))
+        for rt in reg.get("reg_types", []):
+            c, src = rt["code"], rt.get("source", "")
+            add(f"reg_type|{c}|name", "registration", "text", rt.get("name") or c, src)
+            add(f"reg_type|{c}|path", "registration", "text", rt.get("path", ""), src)
+            for flag in ("approval", "pre_approval", "advanced_prereg"):
+                add(f"reg_type|{c}|{flag}", "registration", "bool", bool(rt.get(flag)), src)
+            for aic, d in rt.get("admission_items", {}).items():
+                for tier, val in d.get("prices", {}).items():
+                    if isinstance(val, dict):
+                        continue  # validation blocks unresolved prices
+                    add(f"fee|{c}|{aic}|{tier}", "registration", "money", val, d.get("source", src))
+        for it in reg.get("admission_items", []):
+            src = it.get("source", "")
+            add(f"admission_item|{it['code']}|name", "registration", "text", it["name"], src)
+            add(f"admission_item|{it['code']}|reg_types", "registration", "set", it["reg_types"], src)
+            parts = [x for x in (it.get("additional_text"), it.get("description")) if x]
+            if parts:
+                add(f"admission_item|{it['code']}|description", "registration", "contains", parts, src)
+    for g in p.get("items", []):
+        for it in g["items"]:
+            if yes(it.get("sessionboard_sync", "")):
+                continue
+            k, src = it["code"] or it["title"], it["source"]
+            add(f"item|{k}|title", "items", "text", it["title"], src)
+            if it.get("capacity") and not blank(it["capacity"]):
+                add(f"item|{k}|capacity", "items", "judge", it["capacity"], src)
+            for tier, val in it["prices"].items():
+                for variant, v in (val.items() if isinstance(val, dict) and "raw" not in val else [("", val)]):
+                    if not isinstance(v, dict):
+                        add(f"item|{k}|price|{tier}{'|' + variant if variant else ''}", "items", "money", v, src)
+    work = os.path.join(out_dir, "discounts_api.json")
+    if os.path.exists(work):
+        for d in json.load(open(work)).get("discounts", []):
+            add(f"discount|{d['code']}", "discounts", "discount", "unchanged", d.get("source", ""))
+    for q in p.get("questions", []):
+        k, src = q["code"] or q["source"], q["source"]
+        add(f"question|{k}|text", "questions", "text", q["text"], src)
+        add(f"question|{k}|required", "questions", "bool", bool(q["required"]), src)
+        if q.get("appearance"):
+            add(f"question|{k}|type", "questions", "judge", q["appearance"], src)
+        if q["answers"]:
+            add(f"question|{k}|answers", "questions", "list", [a["text"] or a["code"] for a in q["answers"]], src)
+        if q.get("reg_types"):
+            add(f"question|{k}|reg_types", "questions", "judge", q["reg_types"], src)
+        if q["display_when"]:
+            add(f"question|{k}|display_when", "questions", "judge", q["display_when"], src)
+    site = p.get("website", {})
+    if site.get("theme", {}).get("name"):
+        add("website|theme", "website", "text", site["theme"]["name"])
+    for aud, links in site.get("footers", {}).items():
+        add(f"website|footer|{aud}", "website", "list",
+            [f"{l['label']} -> {l['url']}" for l in links if l["visible"]])
+    body = site.get("body", {})
+    if body:
+        add("website|header|already_registered_link", "website", "bool", bool(site["header"]["already_registered_link"]))
+        add("website|register_buttons", "website", "set",
+            [x["name"] for x in reg.get("paths", []) if x.get("web_visible")])
+        cd = body["countdown_timer"]
+        add("website|countdown|enabled", "website", "bool", bool(cd["enabled"]))
+        if cd["enabled"] and cd.get("label"):
+            add("website|countdown|label", "website", "text", cd["label"])
+        cal = body["event_information"]["add_to_calendar"]
+        add("website|add_to_calendar|enabled", "website", "bool", bool(cal["enabled"]))
+        add("website|social", "website", "set", [x["url"] for x in body.get("social_media", [])])
+    for cm in p.get("communications", []):
+        add(f"comm|{cm['type']}|draft", "comms", "judge", "configured, not sent or scheduled", cm["source"])
+    return C
+
+
+def expect(out_dir, test_target=False):
+    p = json.load(open(os.path.join(out_dir, "plan.json")))
+    checks = expected_checks(p, out_dir, test_target)
+    counts = {}
+    for c in checks:
+        counts[c["id"]] = counts.get(c["id"], 0) + 1
+    for c in checks:  # the RR repeats a name: tell the records apart by their source cell
+        if counts[c["id"]] > 1:
+            c["id"] = f"{c['id']}@{c.get('source', '?')}"
+    ids = [c["id"] for c in checks]
+    with open(os.path.join(out_dir, "expected.json"), "w") as f:
+        json.dump({"test_target": test_target, "checks": checks}, f, indent=1)
+    path = os.path.join(out_dir, "readback.json")
+    old = json.load(open(path)) if os.path.exists(path) else {}
+    with open(path, "w") as f:
+        json.dump({i: old.get(i) for i in ids if not i.startswith("discount|")}, f, indent=1)
+    by = {}
+    for c in checks:
+        by[c["section"]] = by.get(c["section"], 0) + 1
+    print(f"{len(checks)} checks: " + ", ".join(f"{k} {v}" for k, v in by.items()))
+    print("Fill readback.json with what Cvent shows (null = not read). Discount checks come from the "
+          "latest cvent_discounts_check results file.")
+
+
+def same(c, obs):
+    k, exp = c["kind"], c["expected"]
+    if k == "judge":
+        return isinstance(obs, dict) and bool(ws(obs.get("observed", ""))) and obs.get("ok") is True
+    if k == "not_live":
+        o = key(obs)
+        return bool(o) and not re.search(r"(?<!not )(?<!un)\b(active|live|launched|published)\b", o)
+    if k == "bool":
+        return (obs if isinstance(obs, bool) else yes(obs) if key(obs) in ("yes", "no", "y", "n", "true", "false") else None) is exp
+    if k == "money":
+        a, b = money(exp), money(obs)
+        return a is not None and b is not None and Decimal(a) == Decimal(b)
+    if k == "date":
+        return str(obs)[:10] == exp
+    if k == "code":
+        return ws(obs).upper() == ws(exp).upper()
+    if k == "set":
+        return isinstance(obs, list) and sorted({ws(x).upper() for x in obs}) == sorted({ws(x).upper() for x in exp})
+    if k == "list":
+        return isinstance(obs, list) and [ws(x) for x in obs] == [ws(x) for x in exp]
+    if k == "contains":
+        return all(key(x) in key(obs) for x in exp)
+    if k == "discount":
+        return obs == "unchanged"
+    return ws(obs) == ws(exp)
+
+
+def verify(out_dir):
+    E = json.load(open(os.path.join(out_dir, "expected.json")))
+    rb_path = os.path.join(out_dir, "readback.json")
+    rb = json.load(open(rb_path)) if os.path.exists(rb_path) else {}
+    val = json.load(open(os.path.join(out_dir, "validation.json")))
+    blocked = {sec for sec, r in val.items() if r["errors"]}
+    decisions = open(os.path.join(out_dir, "decisions.md")).read() if os.path.exists(os.path.join(out_dir, "decisions.md")) else ""
+    wpath = os.path.join(out_dir, "qa_waivers.json")
+    waivers = json.load(open(wpath)) if os.path.exists(wpath) else {}
+    work = os.path.join(out_dir, "discounts_api.json")
+    disc, disc_note = {}, ""
+    checked = os.path.join(out_dir, "discounts_api.checked.json")
+    if os.path.exists(checked) and os.path.exists(work):
+        r = json.load(open(checked))
+        if r.get("fileSha256") == hashlib.sha256(open(work, "rb").read()).hexdigest():
+            disc = {o["code"]: o["status"] for o in r.get("outcomes", [])}
+        else:
+            disc_note = "discounts_api.checked.json is for an older work file; run cvent_discounts_check again."
+    results = []
+    for c in E["checks"]:
+        sec = "identity" if c["section"] == "identity" else c["section"]
+        obs = disc.get(c["id"].split("|", 1)[1]) if c["kind"] == "discount" else rb.get(c["id"])
+        if sec in blocked and sec != "identity":
+            status = "blocked"
+        elif c["id"] in waivers and c["id"] in decisions and ws(waivers[c["id"]]):
+            status = "waived"
+        elif obs is None:
+            status = "unread"
+        else:
+            status = "pass" if same(c, obs) else "fail"
+        results.append({**c, "observed": obs, "status": status})
+    n = {k: sum(r["status"] == k for r in results) for k in ("pass", "fail", "unread", "waived", "blocked")}
+    complete = n["fail"] == 0 and n["unread"] == 0
+    with open(os.path.join(out_dir, "qa.json"), "w") as f:
+        json.dump({"complete": complete, "counts": n, "results": results}, f, indent=1)
+    secs = sorted({r["section"] for r in results})
+    L = ["# QA", "", f"**{'COMPLETE' if complete else 'NOT COMPLETE'}** — every planned value checked against Cvent.", "",
+         "| Section | Pass | Fail | Unread | Waived | Blocked |", "|---|---|---|---|---|---|"]
+    for sec in secs:
+        rs = [r for r in results if r["section"] == sec]
+        L.append(f"| {sec} | " + " | ".join(str(sum(r['status'] == k for r in rs)) for k in ("pass", "fail", "unread", "waived", "blocked")) + " |")
+    if disc_note:
+        L += ["", f"- {disc_note}"]
+    for k in ("fail", "unread"):
+        rs = [r for r in results if r["status"] == k]
+        if rs:
+            L += ["", f"## {k} ({len(rs)})"]
+            L += [f"- `{r['id']}` expected {json.dumps(r['expected'])[:120]}"
+                  + (f", Cvent shows {json.dumps(r['observed'])[:120]}" if k == "fail" else "")
+                  + (f" ({r['source']})" if r.get("source") else "") for r in rs[:200]]
+            if len(rs) > 200:
+                L.append(f"- … {len(rs) - 200} more in qa.json")
+    with open(os.path.join(out_dir, "qa.md"), "w") as f:
+        f.write("\n".join(L) + "\n")
+    print("\n".join(L[:12 + len(secs)]))
+    return 0 if complete else 1
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if len(args) >= 1 and args[0] == "extract" and len(args) == 3:
@@ -1755,6 +2128,10 @@ def main():
         sys.exit(validate(args[1]))
     elif len(args) == 3 and args[0] == "images":
         images(args[1], args[2])
+    elif len(args) == 2 and args[0] == "expect":
+        expect(args[1], "--test-target" in sys.argv)
+    elif len(args) == 2 and args[0] == "verify":
+        sys.exit(verify(args[1]))
     else:
         sys.exit(__doc__)
 

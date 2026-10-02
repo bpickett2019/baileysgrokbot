@@ -312,6 +312,7 @@ import {
   listAgentSkillRecords,
   skillCreateFromTool,
   skillDeleteFromTool,
+  skillFilesFromTool,
   skillReadFromTool,
   skillUpdateFromTool,
 } from "./skill-tools.js";
@@ -2582,6 +2583,25 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
             await recordComputerAction("write_file", filePath, { bytes: content.byteLength });
             return finish({ ok: true, path: filePath });
+          }
+          if (name === "skill_files") {
+            return finish(
+              await skillFilesFromTool(
+                deps.prisma,
+                { spaceId: run.spaceId, userId: run.userId },
+                { name: args.name ? String(args.name) : undefined },
+                async (filePath, text) => {
+                  const content = new TextEncoder().encode(text);
+                  workspaceCheckpoint.markDirty();
+                  await deps.sandbox.writeFile(
+                    computer,
+                    { path: resolveBotWorkspacePath(computerMode, bot.id, filePath), content },
+                    context,
+                  );
+                  await recordComputerAction("write_file", filePath, { bytes: content.byteLength });
+                },
+              ),
+            );
           }
           if (name === "render_plot") {
             if (args.charts !== undefined) {

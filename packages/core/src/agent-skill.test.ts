@@ -8,6 +8,9 @@ import {
   formatSkillsCatalogInstruction,
   mergeBuiltinSkills,
   parseSkillMd,
+  skillContentProblem,
+  skillFiles,
+  skillTextForModel,
 } from "./agent-skill.js";
 
 describe("built-in skill merging", () => {
@@ -287,5 +290,77 @@ describe("skill prompt helpers", () => {
     expect(line).toContain("- Daily standup: Prepare standup notes");
     expect(line).toContain("skill_read");
     expect(line).toContain("Prefer matching skills");
+  });
+});
+
+describe("skill files", () => {
+  const tool = "import sys\n\n\ndef main():\n    print(sys.argv)\n";
+  const content = buildSkillMd({
+    name: "Plan builder",
+    description: "Builds a plan",
+    body: `Run the tool.\n\n\`\`\`python file=shared/tools/plan.py\n${tool}\`\`\`\n\n\`\`\`bash\necho kept\n\`\`\`\n`,
+  });
+
+  it("extracts file blocks byte for byte and leaves other code blocks alone", () => {
+    expect(skillFiles(content)).toEqual([{ path: "shared/tools/plan.py", content: tool }]);
+    const text = skillTextForModel(content);
+    expect(text).not.toContain("def main");
+    expect(text).toContain("```python file=shared/tools/plan.py\n[5 lines; call skill_files");
+    expect(text).toContain("echo kept");
+  });
+
+  it("bounds the model-visible text, not the carried files", () => {
+    const big = buildSkillMd({
+      name: "Big tool",
+      description: "Carries a large file",
+      body: `\`\`\`python file=tools/big.py\n${"x = 1\n".repeat(30_000)}\`\`\`\n`,
+    });
+    expect(big.length).toBeGreaterThan(100_000);
+    expect(skillContentProblem(big)).toBeUndefined();
+    const prose = buildSkillMd({
+      name: "Long",
+      description: "Long text",
+      body: "word ".repeat(25_000),
+    });
+    expect(skillContentProblem(prose)).toMatch(/outside file blocks/);
+  });
+
+  it("rejects unsafe or duplicate file paths", () => {
+    const withPath = (path: string) =>
+      buildSkillMd({
+        name: "P",
+        description: "P",
+        body: `\`\`\`text file=${path}\na\n\`\`\`\n\`\`\`text file=ok.txt\nb\n\`\`\`\n`,
+      });
+    expect(skillContentProblem(withPath("../etc/passwd"))).toMatch(/relative/);
+    expect(skillContentProblem(withPath("/abs/path"))).toMatch(/relative/);
+    expect(skillContentProblem(withPath("a/./b"))).toMatch(/relative/);
+    expect(skillContentProblem(withPath("ok.txt"))).toMatch(/unique/);
+    expect(skillContentProblem(withPath("tools/a.py"))).toBeUndefined();
+  });
+
+  it("expands forced skills without their file bodies", () => {
+    const prompt = expandSkillReferencesInPrompt("/Plan builder\ngo", [
+      {
+        name: "Plan builder",
+        description: "Builds a plan",
+        content,
+        source: "user",
+        readOnly: false,
+      },
+    ]);
+    expect(prompt).toContain("Run the tool.");
+    expect(prompt).not.toContain("def main");
+    expect(
+      expandSkillReferencesInPrompt(prompt, [
+        {
+          name: "Plan builder",
+          description: "Builds a plan",
+          content,
+          source: "user",
+          readOnly: false,
+        },
+      ]),
+    ).toBe(prompt);
   });
 });

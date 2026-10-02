@@ -1,3 +1,5 @@
+import { SKILL_CONTENT_MAX_CHARS, SKILL_TEXT_MAX_CHARS } from "@rakazo/contracts";
+
 /**
  * Claude Agent Skills: reusable SKILL.md recipes shared across assistants.
  * The Pi runtime already understands this format; we persist and inject them.
@@ -134,8 +136,50 @@ export function formatSkillsCatalogInstruction(entries: SkillCatalogEntry[]): st
   ].join("\n");
 }
 
+/**
+ * Skills can carry tool files as fenced blocks whose info string ends in `file=<path>`,
+ * e.g. "```python file=shared/tools/plan.py". The model reads a one-line stub instead of
+ * the code; `skill_files` writes the exact text to that workspace path.
+ */
+const SKILL_FILE_BLOCK = /^```([\w+-]*)[ \t]+file=(\S+)[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/gm;
+const SKILL_FILE_PATH = /^(?!.*(?:^|\/)\.{1,2}(?:\/|$))[\w.-]+(?:\/[\w.-]+)*$/;
+const SKILL_FILES_MAX = 20;
+
+export type SkillFile = { path: string; content: string };
+
+export function skillFiles(content: string): SkillFile[] {
+  return [...content.matchAll(SKILL_FILE_BLOCK)].map((match) => ({
+    path: match[2] ?? "",
+    content: `${match[3] ?? ""}\n`,
+  }));
+}
+
+/** SKILL.md as the model should read it: file blocks become stubs. */
+export function skillTextForModel(content: string): string {
+  return content.replace(SKILL_FILE_BLOCK, (_block, lang: string, path: string, code: string) => {
+    const lines = code.split("\n").length;
+    return `\`\`\`${lang} file=${path}\n[${lines} lines; call skill_files to write this file]\n\`\`\``;
+  });
+}
+
+export function skillContentProblem(content: string): string | undefined {
+  if (content.length > SKILL_CONTENT_MAX_CHARS) {
+    return `Skill content must be at most ${SKILL_CONTENT_MAX_CHARS} characters.`;
+  }
+  const text = skillTextForModel(content);
+  if (text.length > SKILL_TEXT_MAX_CHARS) {
+    return `Skill text outside file blocks must be at most ${SKILL_TEXT_MAX_CHARS} characters.`;
+  }
+  const paths = skillFiles(content).map((file) => file.path);
+  if (paths.length > SKILL_FILES_MAX) return `A skill can carry at most ${SKILL_FILES_MAX} files.`;
+  const bad = paths.find((path) => !SKILL_FILE_PATH.test(path));
+  if (bad) return `Skill file path "${bad}" must be relative, without "." or ".." segments.`;
+  if (new Set(paths).size !== paths.length) return "Skill file paths must be unique.";
+  return undefined;
+}
+
 export function formatForcedSkillPrompt(name: string, content: string, rest?: string): string {
-  const parts = [`Use skill: ${name}`, "", content.trim()];
+  const parts = [`Use skill: ${name}`, "", skillTextForModel(content).trim()];
   const trailing = rest?.trim();
   if (trailing) parts.push("", trailing);
   return parts.join("\n");
@@ -246,7 +290,7 @@ export function expandSkillReferencesInPrompt(
     const skill = findSkillByName(skills, forced.name);
     if (skill) {
       // Routines expand at fire time into `Use skill: …`; run time expands again — stay idempotent.
-      if (restAlreadyIncludesSkillContent(forced.rest, skill.content)) {
+      if (restAlreadyIncludesSkillContent(forced.rest, skillTextForModel(skill.content))) {
         return prompt.trimStart();
       }
       return formatForcedSkillPrompt(skill.name, skill.content, forced.rest);

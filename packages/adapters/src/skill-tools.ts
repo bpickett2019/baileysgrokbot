@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   buildSkillMd,
   findSkillByName,
@@ -6,19 +7,22 @@ import {
   parseSkillMd,
   type SkillRecord,
   type SkillSource,
+  skillContentProblem,
+  skillFiles,
+  skillTextForModel,
 } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { BUILTIN_AGENT_SKILLS } from "./builtin-skills.js";
 
 export const SKILL_TOOL_NAMES = new Set([
   "skill_read",
+  "skill_files",
   "skill_create",
   "skill_update",
   "skill_delete",
 ]);
 
 /** Match CreateAgentSkillInput / UpdateAgentSkillInput / parseSkillMd bounds. */
-const MAX_SKILL_CONTENT_CHARS = 100_000;
 const MAX_SKILL_NAME_CHARS = 80;
 const MAX_SKILL_DESCRIPTION_CHARS = 2000;
 
@@ -61,13 +65,6 @@ function builtinRecords(): Array<SkillRecord & { id: string }> {
     source: "builtin" as const,
     readOnly: true,
   }));
-}
-
-function rejectOversizedContent(content: string): string | undefined {
-  if (content.length > MAX_SKILL_CONTENT_CHARS) {
-    return `Skill content must be at most ${MAX_SKILL_CONTENT_CHARS} characters.`;
-  }
-  return undefined;
 }
 
 function rejectInvalidSkillFields(name: string, description: string): string | undefined {
@@ -113,13 +110,40 @@ export async function skillReadFromTool(
 ): Promise<Record<string, unknown>> {
   const skill = await findOwnedSkill(prisma, owner, input);
   if (!skill) return { error: "Skill not found." };
+  const files = skillFiles(skill.content);
   return {
     name: skill.name,
     description: skill.description,
     source: skill.source,
     readOnly: skill.readOnly,
-    content: skill.content,
+    content: skillTextForModel(skill.content),
+    ...(files.length ? { files: files.map((file) => file.path) } : {}),
   };
+}
+
+/** Write a skill's `file=` blocks to the bot workspace, byte for byte. */
+export async function skillFilesFromTool(
+  prisma: PrismaClient,
+  owner: SkillOwner,
+  input: { name?: string; skillId?: string },
+  writeFile: (path: string, content: string) => Promise<void>,
+): Promise<Record<string, unknown>> {
+  const skill = await findOwnedSkill(prisma, owner, input);
+  if (!skill) return { error: "Skill not found." };
+  const problem = skillContentProblem(skill.content);
+  if (problem) return { error: problem };
+  const files = skillFiles(skill.content);
+  if (!files.length) return { error: "This skill carries no files." };
+  const written = [];
+  for (const file of files) {
+    await writeFile(file.path, file.content);
+    written.push({
+      path: file.path,
+      bytes: Buffer.byteLength(file.content),
+      sha256: createHash("sha256").update(file.content).digest("hex"),
+    });
+  }
+  return { ok: true, skill: skill.name, written };
 }
 
 export async function skillCreateFromTool(
@@ -150,7 +174,7 @@ export async function skillCreateFromTool(
     content = buildSkillMd({ name, description, body });
   }
 
-  const oversized = rejectOversizedContent(content);
+  const oversized = skillContentProblem(content);
   if (oversized) return { error: oversized };
 
   const existing = await findOwnedSkill(prisma, owner, { name });
@@ -230,7 +254,7 @@ export async function skillUpdateFromTool(
 
   const invalid = rejectInvalidSkillFields(nextName, nextDescription);
   if (invalid) return { error: invalid };
-  const oversized = rejectOversizedContent(nextContent);
+  const oversized = skillContentProblem(nextContent);
   if (oversized) return { error: oversized };
 
   if (nextName.toLowerCase() !== existing.name.toLowerCase()) {

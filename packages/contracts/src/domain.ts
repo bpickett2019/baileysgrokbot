@@ -494,6 +494,11 @@ export const TaughtSkillSchema = z.object({
 });
 export type TaughtSkill = z.infer<typeof TaughtSkillSchema>;
 
+/** Whole SKILL.md, including tool files carried as `file=` code blocks. */
+export const SKILL_CONTENT_MAX_CHARS = 400_000;
+/** What the model reads: SKILL.md with each file block reduced to a one-line stub. */
+export const SKILL_TEXT_MAX_CHARS = 100_000;
+
 export const AgentSkillSourceSchema = z.enum(["user", "builtin", "plugin"]);
 export type AgentSkillSource = z.infer<typeof AgentSkillSourceSchema>;
 
@@ -520,10 +525,10 @@ export type AgentSkillCatalogEntry = z.infer<typeof AgentSkillCatalogEntrySchema
 
 export const CreateAgentSkillInput = z
   .object({
-    content: z.string().min(1).max(100_000).optional(),
+    content: z.string().min(1).max(SKILL_CONTENT_MAX_CHARS).optional(),
     name: z.string().min(1).max(80).optional(),
     description: z.string().min(1).max(2000).optional(),
-    body: z.string().max(100_000).optional(),
+    body: z.string().max(SKILL_CONTENT_MAX_CHARS).optional(),
   })
   .superRefine((input, ctx) => {
     if (input.content?.trim()) return;
@@ -539,10 +544,10 @@ export const CreateAgentSkillInput = z
 export const UpdateAgentSkillInput = z
   .object({
     skillId: Id,
-    content: z.string().min(1).max(100_000).optional(),
+    content: z.string().min(1).max(SKILL_CONTENT_MAX_CHARS).optional(),
     name: z.string().min(1).max(80).optional(),
     description: z.string().min(1).max(2000).optional(),
-    body: z.string().max(100_000).optional(),
+    body: z.string().max(SKILL_CONTENT_MAX_CHARS).optional(),
   })
   .superRefine((input, ctx) => {
     if (

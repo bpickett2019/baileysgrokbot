@@ -761,6 +761,18 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "skill_files",
+    description:
+      "Write the tool files a skill carries (its `file=` code blocks) to the workspace paths they name, exactly as stored. Use when skill_read lists `files` or the skill says to.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Exact skill name from the catalog." },
+      },
+      required: ["name"],
+    },
+  },
+  {
     name: "skill_create",
     description:
       "Create a reusable Claude Agent Skill (generic how-to SKILL.md) shared across assistants. The Pi runtime already understands this format; we persist and inject them. Use when a multi-step task is worth repeating or the user asks to save a skill. Do not include account names, channels, or inboxes — those belong in a routine.",

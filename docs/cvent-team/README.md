@@ -4,17 +4,22 @@ One skill and one bot that turn an RR (Registration Requirements) workbook into 
 drafted, verified, **unpublished** Cvent event. The skill is supervised: the user
 approves the plan before any Cvent write, and a human publishes.
 
-- `skills/cvent-build.md`: the whole runbook in one file. It embeds two tools that the
-  bot writes to `shared/cvent-builds/tools/` on first use:
+- `skills/cvent-build.md`: the whole runbook in one file. It carries two tools as
+  `file=` code blocks. The model reads only a one-line stub for each, and
+  `skill_files` writes them byte for byte to `shared/cvent-builds/tools/`:
   - `rr.py` (Appendix A) parses any RR layout (`extract` → `plan` → `validate`) and
-    pulls embedded pictures (`images`). Current registration sheets parse
-    automatically. For legacy layouts, the agent maps them with cited source cells.
-    Real RR errors block their section.
+    pulls embedded pictures (`images`). Nothing is dropped: `cells.json` keeps every
+    cell's stored value, number format, hyperlink and comment. Plan text is verbatim,
+    percent cells read as percentages, and dates without a year are flagged. Current
+    registration sheets parse automatically. For legacy layouts, the agent maps them
+    with cited source cells. Real RR errors block their section.
+  - `rr.py expect` / `verify` check every planned value against what Cvent shows,
+    not samples. Anything unread counts as a failure.
   - `cvent_pw.py` (Appendix B) is the Playwright fallback. It attaches to the Team
     Computer's signed-in Chrome over CDP for uploads, native dropdowns, drag-and-drop
     and iframes, and it takes over when screenshots go blind or an action loops. It
-    only drives a Cvent tab, never fills passwords, and refuses publish, delete and
-    send controls.
+    only drives a Cvent tab, never fills password or secret fields, never reports a
+    field's value as its name, and refuses publish, delete and send controls.
 - `bots.json`: the "Cvent Builder" bot, which follows `/cvent-build`.
 - `../vendor/ego-browser/`: the unmodified Ego skill, kept for reference only.
 
@@ -27,12 +32,11 @@ approves the plan before any Cvent write, and a human publishes.
 - Website: theme, header, footer and the six body widget types.
 - Comms as drafts, and policies.
 - Badges and onsite settings.
-- A QA read-back against the plan.
+- QA that checks every planned value against Cvent.
 
 ## Install
 
-1. Import `skills/cvent-build.md` in Knowledge → Skills, by pasting it or by
-   `skill_create` with its full content.
+1. Import `skills/cvent-build.md` in Knowledge → Skills.
 2. Create the bot from `bots.json` and give it a Team Computer and a model
    connection.
 3. For discount codes through the API, save a `cvent_api` credential on the bot:
@@ -65,6 +69,9 @@ event art; a header or logo needs an uploaded file or the user's confirmation.
 - **Approval:** apply needs the user's approval and the checked file's hash.
 - **Write rules:** existing codes are never modified, and every write is read back.
   The first unverified write stops the batch without replay.
+- **Only path:** discount codes are never created, edited, activated or imported in
+  the Cvent UI. Codes the tool can't express (for example, limited to certain reg
+  types) are held and listed for a human.
 
 The tools appear only for bots that have the credential.
 
@@ -76,7 +83,8 @@ Each build writes to `shared/cvent-builds/<FP>/`:
 - `decisions.md` (the user's answers, which override the plan);
 - `code_map.json`;
 - `assets/`;
-- `status.md` and `qa.md`.
+- `cells.json` (the RR evidence);
+- `status.md`, `readback.json` and `qa.md`.
 
 `shared/cvent-learnings/procedures.md` records how each Cvent screen worked, so later
 runs are shorter. It never holds event data or credentials.
