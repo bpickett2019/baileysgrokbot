@@ -1,81 +1,88 @@
-# Cvent build team checkpoint
+# Cvent build skill
 
-Reusable configuration for a supervised RR-workbook-to-Cvent workflow. This is an
-initial playbook, not a validated unattended event builder.
+One skill and one bot that turn an RR (Registration Requirements) workbook into a
+drafted, verified, **unpublished** Cvent event. The skill is supervised: the user
+approves the plan before any Cvent write, and a human publishes.
 
-- `bots.json`: Chief and six specialist definitions, with no account or database IDs.
-- `skills/`: build runbooks, the active Team Computer browser workflow, and an optional host-Ego adapter guide.
-  - `cvent-rr-parse` embeds `rr.py` (extract → plan → validate), which handles any RR layout: current reg sheets are parsed automatically, legacy ones are mapped by the agent with cited source cells, and a validator blocks sections with real RR errors.
-  - `cvent-website-build` covers theme, header, footer and the six body widget types.
-  - `cvent-registration-build` covers types, paths, admission items, pricing, optional items, advanced rules, discounts and vouchers.
-- `../vendor/ego-browser/`: the complete unmodified Ego skill, references, installer, example learnings, and MIT license (reference only; not auto-loaded).
-- Chief coordinates with `cvent-rr-event-build`; specialists reference their lane skills.
-- Use a Team Computer and a user-configured model connection. Model credentials are not included.
+- `skills/cvent-build.md`: the whole runbook in one file. It embeds two tools that the
+  bot writes to `shared/cvent-builds/tools/` on first use:
+  - `rr.py` (Appendix A) parses any RR layout (`extract` → `plan` → `validate`) and
+    pulls embedded pictures (`images`). Current registration sheets parse
+    automatically. For legacy layouts, the agent maps them with cited source cells.
+    Real RR errors block their section.
+  - `cvent_pw.py` (Appendix B) is the Playwright fallback. It attaches to the Team
+    Computer's signed-in Chrome over CDP for uploads, native dropdowns, drag-and-drop
+    and iframes, and it takes over when screenshots go blind or an action loops. It
+    only drives a Cvent tab, never fills passwords, and refuses publish, delete and
+    send controls.
+- `bots.json`: the "Cvent Builder" bot, which follows `/cvent-build`.
+- `../vendor/ego-browser/`: the unmodified Ego skill, kept for reference only.
 
-On a fresh instance, import the skills and create bots using these definitions. To
-import them, either paste each file into Knowledge → Skills, or send Chief this
-message (it uses only the built-in shell, file and skill tools):
+## What it builds
 
-> Run `git clone --depth 1 https://github.com/bpickett2019/baileysgrokbot cvent-team-src`
-> with shell `cwd: "shared"` (or `git -C cvent-team-src pull` if it already exists).
-> For each file in `shared/cvent-team-src/docs/cvent-team/skills/`, `read_file` it. Call `skill_update` with the full content if a skill with that
-> name exists, otherwise `skill_create`. Then list the skill names you installed.
+- Event shell.
+- Registration: types, paths, admission items, pricing tiers, optional items,
+  advanced rules, discount codes and vouchers.
+- Questions and approvals.
+- Website: theme, header, footer and the six body widget types.
+- Comms as drafts, and policies.
+- Badges and onsite settings.
+- A QA read-back against the plan.
 
-Re-run the same message after updates; the running instance keeps older copies in
-its database until then. Give Chief the orchestration runbook as standing guidance.
-With `BROWSER_PROVIDER=computer`, use `/cvent-team-browser` for Ego-inspired semantic
-observation, batched actions, and verification on the existing Team screen. The
-skill does not install Ego Lite or expose its JavaScript SDK. Each bot can have a
-different screen; keep the signed-in bot driving if specialists lack that session.
+## Install
 
-## Included code changes
+1. Import `skills/cvent-build.md` in Knowledge → Skills, by pasting it or by
+   `skill_create` with its full content.
+2. Create the bot from `bots.json` and give it a Team Computer and a model
+   connection.
+3. For discount codes through the API, save a `cvent_api` credential on the bot:
+   basic auth, with the Cvent client ID as the username and the client secret entered
+   in the protected card. The bot asks for it if it is missing.
 
-- Excel `.xlsx` and `.xls` attachments, preserving binary bytes and workbook extensions.
-- CSV MIME inference when a document picker reports Excel's MIME type.
-- Non-root Docker desktop startup for host user IDs absent from the image's passwd database.
-- Attachment and Docker startup regression tests.
+## Run
 
-The parser runbook targets `.xlsx`; `.xls` upload support alone does not add a legacy
-Excel parser. Convert legacy workbooks before parsing.
+Attach the RR workbook and name the target event (URL or exact title), the
+environment, and the mode:
+- **build:** the event is the RR's show;
+- **test-target:** the RR is loaded into an existing test event without changing its
+  title, code or dates.
 
-## Deliberately excluded
+The bot then:
+1. signs in fresh;
+2. checks the event;
+3. sends `plan.md`, the validation errors and its questions;
+4. builds only after the user's OK.
 
-Environment files, model credentials, local database contents, uploaded workbooks,
-generated event plans, browser sessions, transcripts, and production event details.
-This repository is not a backup of the running instance's private state.
+RR images are listed with their tab and cell. Template pictures are never used as
+event art; a header or logo needs an uploaded file or the user's confirmation.
 
 ## Cvent API (discounts)
 
-Discount codes load through server-side tools (`cvent_discounts_check` and
-`cvent_discounts_apply`) that use a saved `cvent_api` credential:
-- **Credential:** basic auth, with the Cvent client ID as the username and the
-  client secret entered in the protected card.
+`cvent_discounts_check` and `cvent_discounts_apply` run on the server with the
+`cvent_api` credential:
 - **Secrecy:** the secret and the OAuth token never reach the model, and
   `secret_request` refuses this credential.
-- **Write rules:** existing codes are never modified, every write is read back,
-  and the first unverified write stops the batch without replay.
+- **Approval:** apply needs the user's approval and the checked file's hash.
+- **Write rules:** existing codes are never modified, and every write is read back.
+  The first unverified write stops the batch without replay.
 
 The tools appear only for bots that have the credential.
 
 ## Runtime files
 
-Each build writes to `shared/cvent-builds/<FP>/`: `plan.json`, `plan.md`,
-`decisions.md` (the user's answers, which override the plan), `code_map.json`,
-`status.md` and `qa.md`.
+Each build writes to `shared/cvent-builds/<FP>/`:
+- `plan.json` and `plan.md`;
+- `validation.md`;
+- `decisions.md` (the user's answers, which override the plan);
+- `code_map.json`;
+- `assets/`;
+- `status.md` and `qa.md`.
 
-Bots also read and append `shared/cvent-learnings/*.md`: the exact navigation
-paths, labels and gotchas from verified runs. These notes turn successful runs
-into repeatable procedures. Never put event data or credentials in them.
+`shared/cvent-learnings/procedures.md` records how each Cvent screen worked, so later
+runs are shorter. It never holds event data or credentials.
 
-## Execution rules
+## Excluded
 
-Require a reviewed plan, a named target event (build mode, or test-target mode for
-loading an RR into an existing test event without changing its identity), explicit
-environment selection, and planner access via a fresh sign-in each run. Default to sandbox. Do not publish, activate, send communications,
-delete, or clone without the authorization specified in the runbooks. Browser work
-must be serialized and verified. These are agent instructions, not a substitute for
-application-level permissions or exhaustive QA.
-
-The `pre-ego-navigation` tag retains the original sandbox-browser checkpoint.
-The optional Ego adapter and its limitations are documented in
+Environment files, credentials, uploaded workbooks, generated plans, browser
+sessions and event details. The optional host Ego adapter is described in
 [../ego-navigation.md](../ego-navigation.md).

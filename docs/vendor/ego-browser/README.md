@@ -20,7 +20,7 @@ examples need the Ego Lite browser and native runtime. Copying these instruction
 does not add those APIs to Chromium or install a Linux version of Ego Lite.
 
 For the existing signed-in Team screen, use
-[the adapted Team Computer skill](../../cvent-team/skills/cvent-team-browser.md).
+[the Cvent build skill](../../cvent-team/skills/cvent-build.md).
 For an explicitly configured separate Mac Ego browser, see
 [the optional host adapter](../../ego-navigation.md). Do not combine their human
 handoff instructions or silently switch between the two browser sessions.

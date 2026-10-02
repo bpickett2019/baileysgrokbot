@@ -11,7 +11,8 @@ Ego Lite currently ships for macOS, not the Linux Team Computer. The complete
 [upstream skill reference](vendor/ego-browser/README.md) is included for inspection;
 copying it does not provide the native browser runtime. To keep the signed-in
 browser visible in Rakazo's embedded Team screen, select `BROWSER_PROVIDER=computer`
-and use [the adapted Team Computer skill](cvent-team/skills/cvent-team-browser.md).
+and use [the Cvent build skill](cvent-team/skills/cvent-build.md), whose browser section
+applies this workflow.
 This applies Ego's observation, batching, and verification workflow to Rakazo's
 existing tools, not the Ego engine. No speedup has been measured.
 
@@ -55,8 +56,9 @@ multi-tenant hosted service.
 
 4. Restart the host API/worker while no run is executing browser actions. Existing
    approval questions remain pending; this is not authorization to continue a build.
-5. Add `docs/cvent-team/skills/cvent-ego-navigation.md` to the team's Skills catalog
-   and reference it in the bots' instructions.
+5. Import `docs/cvent-team/skills/cvent-build.md` into the Skills catalog. Its
+   Playwright fallback reaches only the Team Computer's Chrome, so under Ego it
+   hands off with `request_takeover`.
 
 The app's embedded Computer screen still shows Docker, **not Ego**. Watch and sign
 in through the bound task space in Ego Lite. The adapter disables screenshot/desktop

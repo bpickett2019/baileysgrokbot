@@ -1,170 +1,472 @@
 ---
-name: cvent-rr-parse
-description: "Turn any RR (Registration Requirements) Excel workbook into a validated Cvent build plan: extract every tab, auto-parse known layouts, map legacy layouts with cited sources, validate. Read-only; never touches Cvent."
+name: cvent-build
+description: "Build a Cvent event end to end from any RR (Registration Requirements) workbook: parse and validate the RR, then configure registration, discounts, questions, website, comms and badges in the target event, verify everything, and leave it unpublished. One bot, one browser."
 ---
 
-# cvent-rr-parse — any RR workbook → validated build plan
+# cvent-build
 
-Read-only. Never touches Cvent. RRs differ every show: new and legacy reg-type
-layouts, member/non-member pricing, add-on tabs, typos in dates. So this runs in
-three stages, and you (the agent) fill in only what the tool can't do safely.
+RR workbook in → drafted, verified, **unpublished** Cvent event out. One bot, one browser, this skill.
 
-| Stage | Who | Output |
-|---|---|---|
-| 1. `extract` | tool | `extract.json` (every tab as tables, with cell refs), `inventory.md` |
-| 2. `plan` | tool, plus you for legacy layouts | `plan.json`, `plan.md`, with `coverage` per section |
-| 3. `validate` | tool | `validation.json` and `validation.md`: errors and warnings per section |
+## Principles (every run)
 
-A section with validation errors is never built. Everything else proceeds.
+1. **Ask, don't guess.** Every value needs an RR cell or a user answer. Anything else is a question.
+2. **Verify, then move on.** Make the smallest change you can check, save it, and read it back.
+3. **Never repeat an uncertain write.** If you can't prove a write failed, stop and look before doing anything else.
+4. **See before you click.** Never act on a screen you haven't observed in this step.
+5. **Two tries, then switch; three, then stop.** Change driver after two failed attempts, and ask the user after three.
+6. **Leave the path behind.** Record what worked so the next run is shorter.
 
-## Paths
+## Hard rules
 
-File tools resolve `shared/...` to the Team root, but `shell` starts in the bot's
-own folder. Run every shell command here with `cwd: "shared"`, using paths
-relative to it. On a Private Computer, run `mkdir -p shared` in the default cwd
-first.
+- **Never** publish, go live, launch or activate. Never send or schedule an email, delete, archive, or clone. The publish step belongs to a human.
+- **Stay inside the target event.** Never change account libraries, themes, templates, users, contact types or account-level discounts.
+- **Sandbox by default.** Use production only when the user names it for this run.
+- **Passwords** go in only through `fill_secret` or `request_takeover`. Never put them in chat, files, shell or Playwright.
 
-## 1. Install the tool (once per computer)
+## Files
 
-Write the script at the end of this skill to `shared/cvent-builds/tools/rr.py`
-with `write_file`, exactly as shown. If the file exists with the same
-`PARSER_VERSION`, reuse it; otherwise overwrite it.
+Run `shell` with `cwd: "shared"`. File tools use `shared/...`.
 
-```bash
-python3 -c "import openpyxl" 2>/dev/null || pip install --user openpyxl
+```
+cvent-builds/tools/rr.py, cvent_pw.py        tools (Appendix A, B)
+cvent-builds/<FP>/plan.json plan.md          the plan (source of truth)
+            validation.md validation.json    errors block their section
+            decisions.md                     user answers, quoted; override the plan
+            agent_plan.json code_map.json    your mappings and patches
+            assets/ assets.json              images pulled from the RR
+            status.md qa.md                  progress, evidence, final check
+cvent-learnings/procedures.md                how each Cvent screen works (shared, all runs)
 ```
 
-## 2. Run it
+## 0. Start
 
-First resolve the attachment path: run `realpath "<attachment path>"` in the
-default cwd. Then, with `cwd: "shared"`:
+1. **Tools.** If `cvent-builds/tools/rr.py` or `cvent_pw.py` is missing, or its version line differs from the appendix, write it with `write_file`. Then run
+   `python3 -c "import openpyxl, playwright" 2>/dev/null || pip install --user openpyxl playwright`.
+   No browser download is needed; Playwright attaches to the existing Chrome.
+2. **Intake.** Collect:
+   - the RR attachment;
+   - the target event (URL or exact title);
+   - sandbox or production;
+   - the mode: **build** (the event *is* the RR's show) or **test-target** (load the RR into an existing test event without renaming it or changing its dates or code).
+3. **Fresh sign-in.** Every run starts with a fresh login:
+   - If Cvent is already signed in, use its Log Out first.
+   - `fill` the Account Name, then `fill_secret` the username and password from the saved login. If there's no saved login, use `request_secret` with `auth: login` at the Cvent sign-in origin.
+   - For MFA or SSO, use `request_takeover`.
+4. **Verify the target.** Snapshot the event's title, code, dates and environment. In build mode they must match the RR identity (FP code, name, dates); in test-target mode, the exact title the user gave. On a mismatch, stop.
+
+## 1. Plan
 
 ```bash
-python3 cvent-builds/tools/rr.py extract "<absolute .xlsx path>" cvent-builds/_new
+python3 cvent-builds/tools/rr.py extract "<absolute .xlsx path>" cvent-builds/_new   # realpath the attachment first
 python3 cvent-builds/tools/rr.py plan cvent-builds/_new
+python3 cvent-builds/tools/rr.py images "<absolute .xlsx path>" cvent-builds/_new
 ```
 
-Read the FP code from `plan.md` and rename `_new` to `cvent-builds/<FP>`. Use
-`--keep-test-codes` on `plan` only if the user wants `PPCTEST*` codes kept. Legacy
-`.xls` files must be converted to `.xlsx` first.
+Read the FP code from `plan.md` and rename `_new` to `<FP>`. Use `--keep-test-codes` on `plan` only if asked. Convert `.xls` to `.xlsx` first.
 
-## 3. Read coverage, then fill only the gaps
+**Coverage.** `plan.md` lists each section as `parsed`, `needs_mapping`, `agent` or `absent`.
 
-Open `plan.md`. Its `coverage` line says, per section, `parsed`, `needs_mapping`,
-`absent`, `agent` or `parsed+agent`.
+**Legacy registration (`needs_mapping`).** Old reg types like `ATT Attendee` and `EO Expo Only`, usually with a NEW REG MAPPING tab and sometimes Member/Non-Member columns. Write `agent_plan.json`:
+`{"notes": "...", "registration": {"price_tiers": [...], "admission_items": [...], "reg_types": [...], "paths": [...]}}`.
+The shapes match `plan.json`, and every reg type, item and path carries `"source": "Sheet!A16"`.
+- Use the RR's own names and codes: the mapping tab, then the `registration.lookups` lists. A code that exists nowhere in the RR gets `"code_source": "proposed"` and goes on the user's question list.
+- Take prices from the old row that maps to each new type and item. Member/Non-Member columns become separate reg types only if the mapping tab names them. A cell holding two values is a question.
+- Skip EXAMPLES rows, dropdown lists, and rows with no Registration Method. Old rows with no mapping row are listed in `notes` as questions, never dropped silently.
+- "Staff Only" and "Reg Ops" types go on a planner-only path (`web_visible: false`).
 
-### Registration `needs_mapping` (legacy layout)
+**Small fixes on a parsed plan.** Patch rather than rewrite:
+`{"registration": {"path_assignments": {"STAFF": "Internal"}, "admission_item_codes": {"Full Access": "FULL"}, "price_tier_dates": {"Tier 2": {"start": "2026-09-01", "end": "2026-10-14"}}}}`.
+Patch only what the RR states or the user decided.
 
-Legacy RRs keep old reg types with codes inside one cell (for example
-`ATT Attendee` with admission `EO Expo Only`). They usually include a
-`NEW REG MAPPING` tab, and sometimes Member/Non-Member price columns. The plan
-holds the extracted material under `registration.rows`, `registration.headers`,
-`registration.mapping` and `registration.lookups`; `extract.json` has every
-cell.
+**Images.** `assets.json` lists every embedded picture with its tab and cell.
+- `template: true` means a stock reference picture, often another show's. Never use it as this event's art.
+- Show-specific images (badge samples, screenshots of Cvent lists) are evidence. Look at them with `open_path` before mapping badges or codes.
+- A header or logo comes only from a file the user uploads, or a show-specific RR image the user confirms.
 
-Write `cvent-builds/<FP>/agent_plan.json`:
+**Validate, then approve.** Run `python3 cvent-builds/tools/rr.py validate cvent-builds/<FP>`.
+1. Send the user, in this order:
+   - `plan.md`;
+   - the errors from `validation.md` (real RR problems such as overlapping tiers, a name where a code belongs, or a type with no path);
+   - the open questions.
 
-```json
-{
- "notes": "what you mapped, from which tabs, and what you left out",
- "registration": {
-  "price_tiers": [{"name": "Early Bird", "start": "2026-04-15", "end": "2026-04-29"}],
-  "admission_items": [{"code": "EXONLY", "name": "Expo Only", "description": "...", "reg_types": ["ATT"],
-                       "source": "NEW REG MAPPING!D3", "code_source": "rr | proposed"}],
-  "reg_types": [{"code": "ATT", "name": "Attendee", "path": "Attendee", "web_visible": true,
-                 "source": "NEW REG MAPPING!C2",
-                 "admission_items": {"EXONLY": {"prices": {"Early Bird": "0"}, "source": "Registration Types & Pricing!A6"}}}],
-  "paths": [{"name": "Attendee", "reg_types": ["ATT"], "web_visible": true, "group_registration": false,
-             "source": "Event Details!A38"}]
- }
-}
-```
+   Use `ask_user` where 2–4 options fit.
+2. For discount admission-item codes such as `EO-PB`, offer three options:
+   - map to the item for all reg types;
+   - map it limited to the suggested types (those codes are created inactive until the limit is set in the UI);
+   - skip them.
+3. Write the answers to `decisions.md`, apply them as `agent_plan.json` patches and `code_map.json` (`{"CODE": {"admission_item": "...", "reg_types": [...]}}`, accepted entries only), then re-run `plan` and `validate`.
+4. **Get an explicit OK before any Cvent write.** A section with validation errors is skipped and reported as blocked.
 
-Rules for mapping:
-- **Cite the cell for every value** in `source`. A value you can't cite is a
-  question for the user, not a guess.
-- **Use the RR's own names and codes:** the NEW REG MAPPING tab, then any
-  `lookups` lists in the workbook. If a code exists nowhere in the RR, propose one,
-  set `"code_source": "proposed"`, and list it for the user.
-- **Prices:**
-  - Take each price from the old reg-type row that maps to the new type and
-    admission item.
-  - Member/Non-Member columns become separate reg types (for example `ATTNEW` /
-    `ATTNON`) only if the mapping tab names them. Otherwise ask.
-  - A cell holding two values (for example `135  139`) is a question.
-- **Skip rows** marked as EXAMPLES, dropdown source lists, and rows whose
-  Registration Method is empty.
-- **Old rows with no row in the mapping tab** are left out and listed in `notes`
-  as an open question. Never drop them silently.
-- **Staff-only types** (method "Staff Only" or "Reg Ops") go on a planner-only
-  path with `web_visible: false`.
+## 2. Build (in this order; finish one screen area before the next)
 
-### Small fixes on a parsed layout
+Before each screen, read `procedures.md`. After each save, read the saved values back and append a row to `status.md`:
+`piece | done/blocked/skipped | built/planned | evidence | notes`.
 
-To fix one thing, patch it in `agent_plan.json` instead of rewriting the whole
-section:
+**Matching existing records.** Match by code, then by exact name.
+- If it matches, leave it.
+- If it differs, edit it in place and record before → after.
+- If it isn't in the RR, leave it and list it as pre-existing.
+- If it's missing, create it.
 
-```json
-{"registration": {
-  "path_assignments": {"STAFF": "Internal"},
-  "admission_item_codes": {"Full Access": "FULL"},
-  "price_tier_dates": {"Tier 2": {"start": "2026-09-01", "end": "2026-10-14"}}
-}}
-```
+Never delete, deactivate or rename anything to make it fit. Re-runs must never duplicate.
 
-Only patch what the RR states or what the user decided (cite `decisions.md`).
-Then re-run `plan` and `validate`. `plan` always re-applies `agent_plan.json` on
-top of a fresh parse.
+**A. Event shell.** Set only the fields the RR states: time zone, venue, capacity, registration deadline, languages, contact. In test-target mode, never touch the title, code or dates.
 
-## 4. Validate
+**B. Registration** (event Registration area):
+- **R1 Reg types:** use `name` and `code` exactly. `web_visible: false` means planner/staff only.
+- **R2 Paths:** one per `paths` entry, with exactly its reg types and group registration as flagged. Planner-only paths get no public link. Every type sits on exactly one path; if a type has no path, R2 is blocked.
+- **R3 Admission items:**
+  - name and code as in the plan;
+  - description = additional text, then the RR description;
+  - associate exactly the item's `reg_types`, which is how most availability rules get enforced;
+  - capacity unlimited unless the RR gives one.
+- **R4 Pricing:**
+  - One fee window per plan tier, from 12:00 AM on `start` to 11:59 PM on `end` in the event time zone, contiguous with no overlaps.
+  - Set amounts for every type × item × tier. `0` is an explicit $0.
+  - Reprint fees and GL codes are not admission fees.
+  - Verify by writing what you read back to `fees_readback.json` (`{"TYPE|ITEM|TIER": "amount"}`) and running the fee check (Appendix C1).
+- **R5 Optional items, sessions, add-ons:** from `items` (groups by `kind`).
+  - If `items` is empty, skip R5 unless `decisions.md` names items.
+  - Skip `sessionboard_sync` = Yes; Sessionboard syncs those.
+  - `{member, non-member}` prices are charged by the `member_fee_types` / `nonmember_fee_types` lists.
+- **R6 Advanced rules:** `admission_item_availability` is usually already enforced by R3's associations. Otherwise add an event rule limiting that type to `allowed_admission_items`. Add only rules the RR states. `question_display` rules belong to step C.
+- **R7 Discount codes:**
+  - **Preferred: the API.** Build the work file (Appendix C2), then run `cvent_discounts_check` with `{eventId, eventTitle, file}`.
+    - The event UUID is in the planner URL. Never guess it.
+    - Show the user the counts and the `attention` list.
+    - After their OK, run `cvent_discounts_apply` with the same arguments plus the check's `fileSha256`. Repeat until `notInThisCall` is 0.
+  - **If the tools are missing,** save the `cvent_api` credential: ask the user for the client ID, then `request_secret` with `{"name": "cvent_api", "origin": "https://api-platform.cvent.com", "auth": {"type": "basic", "username": "<client ID>"}}`. The user types the secret into the protected card, and the tools appear on the next message.
+  - **Stop rules:**
+    - `uncertain` or `stoppedEarly`: stop R7 and ask the user to check that code in Cvent. Never retry it or recreate it in the UI.
+    - `preserved_difference`: the existing code was left alone; report it.
+    - Codes created inactive with a "limit to reg types" note need the limit set in the UI, then activation.
+  - **Without API access,** upload an import file through the planner, using the RR template headers and checking them against Cvent's template, or enter a handful of codes by hand.
+- **R8 Vouchers and group discounts:** build only what the RR's voucher or group tabs list. Never turn discount codes into vouchers.
 
+**C. Questions and approvals.** For each question, in RR order:
+- set the text, type, answers in order, required flag, which reg types see it, and its page;
+- build parent questions before dependents, and apply `display_when`;
+- reuse the account's standard questions (contact fields) instead of duplicating them;
+- configure approvals per the event flags and `other_tabs` (Approvals or Approval Site Parameters), with no emails sent.
+
+**D. Website** (Site Designer; save drafts only):
+- **W1 Theme:** use the exact theme named in the plan. If it isn't there, W1 is blocked; list what you saw. Apply the brand colors in order (primary, secondary, background, highlights) and run the contrast check (Appendix C3). Save to this event only; never save to the account library.
+- **W2 Header:** logo or banner from approved assets only; upload with Playwright (`upload`). Add an "Already Registered?" link to the event's own modify/login page if the RR asks. Apply the header to all pages.
+- **W3 Footer:** the attendee audience is the default footer. Other audiences get their own footer on their paths' pages. Show only `visible` links, with the RR label and exact URL in RR order; external links open in a new tab. Contact Us is a `mailto:` link, and `cvent-generated` links go to the built-in page.
+- **W4 Body widgets on the landing page:**
+  1. Event information: title, date and venue bound to event fields, plus Add to Calendar with the RR text.
+  2. Text: show hours as written in the RR, with no invented copy.
+  3. Image: approved assets only, with alt text = event name.
+  4. Registration actions: one Register button per web-visible path, plus the already-registered link.
+  5. Countdown timer: to the first event day, with the RR label.
+  6. Social: one link per network listed.
+
+  Skip a widget only if the RR has nothing for it, and say so. Add widgets with drag-and-drop through Playwright (`drag`) when there's no click-to-add.
+
+**E. Comms, policies, integrations.**
+- **Comms:** only the RR's Yes rows (`communications`). Configure them as draft or inactive; if Cvent turns on a trigger by itself, report it and ask.
+- **Policies:** as the RR states them.
+- **Tracking snippets** (for example GTM): paste them exactly as given.
+
+**F. Badges and onsite.** Badge layouts per type use `badge_text`, the RR's badge tab and show-specific badge images. Apply reprint fees and onsite and Scan & Go settings from `other_tabs`. Never activate devices or launch onsite mode.
+
+**G. QA.** Read back every section against `plan.json`:
+- counts per section;
+- at least 3 spot checks each (names, amounts, dates);
+- the event still unpublished.
+
+Write `qa.md` with pass or fail per check. Then send the user one final report covering:
+- the per-section status;
+- each blocker, with the exact UI message;
+- pre-existing items that aren't in the RR;
+- what is left for a human, including publishing.
+
+## Browser: drivers and guards
+
+**Driver order:**
+1. **Page tools** (Ego provider or Team Computer). `browser_snapshot`, then up to 24 independent edits in one `browser_act`, using only refs from that snapshot.
+   - Break the batch before a save, navigation, dialog or dependent field.
+   - Read `completed` and `uncertain`, and never replay either.
+2. **Playwright fallback** (`cvent_pw.py`). It drives the same signed-in Chrome over CDP.
+   - Use it for uploads, native dropdowns, drag-and-drop, iframe content the page tools can't see, and whenever a guard below trips.
+   - `python3 cvent-builds/tools/cvent_pw.py snapshot` gives numbered refs (`p12`, `f1p3`) for every control in every frame, plus the page text.
+   - `echo '{"steps":[{"kind":"select","ref":"p4","value":"Eastern"}]}' | python3 cvent-builds/tools/cvent_pw.py act` runs steps, stops at the first failure and returns a fresh snapshot.
+   - Refs are valid only until the next snapshot.
+   - It refuses publish, delete and send controls, and password fields, and it drives only a Cvent tab.
+   - It attaches to the Team Computer's Chrome. Under the Ego provider that Chrome isn't signed in, so it answers "No Cvent tab": go to `request_takeover` instead, unless the user gave a DevTools endpoint for this run (`CVENT_PW_CDP=<url> python3 …`).
+3. **Desktop** (`computer_observe` / `computer_act`). Only with an image from this step.
+
+**Guards** (log each trip in `status.md`):
+- **Blind guard.** If an observation comes back with no image or an empty tree, do not act on coordinates. Switch to the Playwright text snapshot, and treat everything done since the last good observation as unverified: re-read those fields before continuing.
+- **Loop guard.** The same action on the same target twice with no visible change means switch to the next driver. A third time means stop and ask the user (`request_takeover` or `ask_user`). Never switch drivers more than twice on one piece.
+- **Dialogs.** A popup is a new decision point. Choose Save, never "Save & Publish". If Save isn't offered, stop and ask.
+- **Timeouts.** After a failure or timeout, observe the current state before deciding what's left. Waits are bounded re-observations, not sleeps.
+
+## Procedures (gets better every run)
+
+After a verified save, append one line per screen to `cvent-learnings/procedures.md`:
+`Screen | navigation path | exact labels clicked | required fields | driver that worked | gotchas`.
+
+Fix wrong lines instead of adding contradictions. Never record event data, IDs or credentials. Follow these lines before improvising.
+
+## Appendix C: snippets (shell, `cwd: "shared"`, replace `<FP>`)
+
+**C1 Fee check.**
 ```bash
-python3 cvent-builds/tools/rr.py validate cvent-builds/<FP>
+python3 - <<'EOF'
+import json
+plan=json.load(open("cvent-builds/<FP>/plan.json"))["registration"]
+seen=json.load(open("cvent-builds/<FP>/fees_readback.json"))
+bad=[(k,v,seen.get(k)) for rt in plan["reg_types"] for item,d in rt["admission_items"].items()
+     for tier,v in d["prices"].items() if str(v).replace('.','',1).isdigit()
+     for k in [f"{rt['code']}|{item}|{tier}"] if str(seen.get(k)) not in (str(v), f"{float(v):.2f}")]
+print("fee mismatches:", bad or "none")
+EOF
 ```
 
-`validation.md` lists errors and warnings per section: identity, website,
-registration, items, discounts, questions. Typical errors are real RR problems:
-- overlapping or undated price tiers;
-- a name typed where a code belongs;
-- a reg type with no path;
-- a price cell holding two numbers.
+**C2 Discount work file.**
+```bash
+python3 - <<'EOF'
+import json, os, re
+plan=json.load(open("cvent-builds/<FP>/plan.json"))
+known={i["code"] for i in plan["registration"]["admission_items"]}
+p="cvent-builds/<FP>/code_map.json"
+cmap={k:v for k,v in (json.load(open(p)) if os.path.exists(p) else {}).items() if v}
+M={"Subtract an amount":"BY_AMOUNT","Subtract a percentage":"BY_PERCENTAGE","Charge a fixed price":"FLAT_PRICE"}
+A={"invitees and guests":"ALL","invitees":"PRIMARY","guests":"GUEST","":"ALL"}
+iso=lambda v: v[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}( .*)?", v or "") else None
+out, held = [], []
+for c in plan["discounts"]["codes"]:
+    items, types, unmapped, plain = [], [], [], []
+    for code in c["admission_items"]:
+        if code in cmap: items.append(cmap[code]["admission_item"]); types += cmap[code]["reg_types"]
+        elif code in known: items.append(code); plain.append(code)
+        else: unmapped.append(code)
+    if unmapped or (types and plain) or c["method"] not in M:
+        held.append({"code":c["code"],"unmapped":unmapped,"mixed_with":plain if types else [],"method":c["method"],"source":c["source"]}); continue
+    s={"code":c["code"],"name":(c["name"] or c["code"])[:50],"method":M[c["method"]],"value":float(c["amount"]),
+       "active":c["active"] and not types,"stackable":c["stackable"],
+       "capacity":int(c["capacity"]) if str(c["capacity"]).isdigit() else -1,
+       "audience":A.get(c["usable_by"].lower(),"ALL"),"includeGuestsTowardsCapacity":not c["count_guests"].lower().startswith("no"),
+       "admissionItems":list(dict.fromkeys(items)),"source":c["source"]}
+    for k,v in (("effectiveFrom",iso(c["effective_from"])),("effectiveTo",iso(c["effective_to"]))):
+        if v: s[k]=v
+    note=(c["internal_note"]+(f" | limit to reg types: {','.join(dict.fromkeys(types))}" if types else "")).strip(" |")
+    if note: s["note"]=note[:300]
+    out.append(s)
+json.dump({"discounts":out},open("cvent-builds/<FP>/discounts_api.json","w"),indent=1)
+json.dump(held,open("cvent-builds/<FP>/discount_blocked.json","w"),indent=1)
+print(len(out),"in work file ·",len(held),"held (see discount_blocked.json)")
+EOF
+```
 
-Don't "fix" them by guessing. Turn each one into a question for the user.
+**C3 Contrast check** (needs at least 4.5).
+```bash
+python3 -c "
+import sys
+def L(h):
+    c=[int(h[i:i+2],16)/255 for i in (1,3,5)]; c=[x/12.92 if x<=0.03928 else ((x+0.055)/1.055)**2.4 for x in c]
+    return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2]
+a,b=sorted([L(sys.argv[1]),L(sys.argv[2])],reverse=True); print(round((a+0.05)/(b+0.05),2))" '#BUTTON' '#TEXT'
+```
 
-## 5. Approve
+## Appendix B: cvent_pw.py
 
-Send the user `plan.md`, then the errors from `validation.md`, then the open
-questions, in that order. Use `ask_user` where 2–4 options cover a question.
+```python
+#!/usr/bin/env python3
+"""Playwright fallback for the bot computer's signed-in Chrome (same session, via CDP).
 
-For admission-item codes in discounts (for example `EO-PB`), offer:
-- "Map to the item for all reg types": `reg_types: []`, so the codes are created active.
-- "Map to the item, limited to the suggested reg types": the API can't set the
-  limit, so those codes are created inactive until it's set in the UI.
-- "Skip these codes".
+  python3 cvent_pw.py snapshot [--shot FILE]       numbered refs for every visible control, all frames
+  python3 cvent_pw.py act [--shot FILE] < steps.json   run steps, then re-snapshot
+  python3 cvent_pw.py shot FILE                     screenshot only
 
-Record each answer in `cvent-builds/<FP>/decisions.md`, quoting the user. Apply
-it as an `agent_plan.json` patch, and write any accepted discount-code mappings
-to `code_map.json` as `{"CODE": {"admission_item": "...", "reg_types": [...]}}`.
-Re-run `plan` and `validate`.
+steps.json: {"steps": [{"kind": "click", "ref": "p12"}, ...]}
+  kinds: click | fill (text) | select (value or label) | check (bool) | upload (path)
+         | drag (ref -> to) | press (key) | scroll (dy) | wait (ms, max 10000)
+Refs come only from the latest snapshot. The run stops at the first failed step.
+Never use this for passwords (sign-in uses the page tools' fill_secret).
+Attaches to the Team Computer's Chrome (CDP port 9221 + display number). Set CVENT_PW_CDP
+to another DevTools endpoint only if the user gave it for this run.
+"""
+import json
+import os
+import re
+import sys
+import time
+from urllib.parse import urlparse
 
-**Get an explicit OK before any Cvent write.** Sections with remaining errors stay
-blocked; tell the user which ones.
+from playwright.sync_api import sync_playwright
 
-## plan.json (what the build skills read)
+PW_VERSION = 2
+FORBIDDEN = re.compile(
+    r"\b(publish|go live|launch|un-?publish|delete|remove|archive|cancel event|send|"
+    r"invite|email (now|attendees)|activate event)\b",
+    re.I,
+)
+REF_ATTR = "data-cvent-ref"
 
-| Key | Contents |
-|---|---|
-| `coverage` | Per-section status |
-| `event` | Identity key, dates, time zone, approval flags, `registration_paths_section` |
-| `website` | `theme`, `header`, `footers.<audience>` (`url` can be `mailto:` or `cvent-generated`), `body` widgets |
-| `registration` | `price_tiers`, `paths`, `reg_types` (`admission_items[code].prices[tier]`), `admission_items`, `advanced_rules`, `skipped_rows` |
-| `items` | Groups of sessions, add-ons, optional items and memberships: each has `kind`, `price_tiers` and `items` (prices may be `{member, non-member}`) |
-| `discounts` | `codes` (each with `raw` RR columns and `source`), `template_headers`, `dropped_test_codes`, `admission_item_code_map`, `group_discounts`, `vouchers` |
-| `questions` | Questions with answers, `display_when` and `source` |
-| `communications`, `other_tabs` | Data for the comms, approvals, policies, badge and onsite lanes |
-| `gaps`, `open_questions`, `agent_notes` | For the user |
+MARK = """
+(prefix) => {
+  const out = [];
+  const sel = 'a,button,input,select,textarea,[role=button],[role=link],[role=tab],[role=menuitem],' +
+    '[role=option],[role=checkbox],[role=radio],[role=combobox],[role=switch],[contenteditable=true],' +
+    '[draggable=true],[role=treeitem],label';
+  let i = 0;
+  for (const el of document.querySelectorAll(sel)) {
+    const r = el.getBoundingClientRect();
+    const st = getComputedStyle(el);
+    if (r.width < 2 || r.height < 2 || st.visibility === 'hidden' || st.display === 'none') continue;
+    const ref = prefix + (i++);
+    el.setAttribute('data-cvent-ref', ref);
+    const name = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder ||
+                  el.title || el.name || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+    const item = { ref, tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || '', name };
+    if (el.type) item.type = el.type;
+    if (el.type === 'password') item.value = '***';
+    else if ('value' in el && el.tagName !== 'BUTTON' && el.value) item.value = String(el.value).slice(0, 80);
+    if (el.tagName === 'SELECT') item.options = [...el.options].slice(0, 40).map(o => o.label);
+    if (el.disabled) item.disabled = true;
+    if (el.checked) item.checked = true;
+    out.push(item);
+  }
+  const text = (document.body ? document.body.innerText : '').replace(/\\n{3,}/g, '\\n\\n').slice(0, 4000);
+  return { items: out, text };
+}
+"""
 
-## The tool
+
+def endpoint():
+    if os.environ.get("CVENT_PW_CDP"):
+        return os.environ["CVENT_PW_CDP"]
+    m = re.search(r":(\d+)", os.environ.get("DISPLAY", ":0"))
+    return f"http://127.0.0.1:{9221 + int(m.group(1) if m else 0)}"
+
+
+def fail(message):
+    print(json.dumps({"error": message}))
+    sys.exit(1)
+
+
+def connect(p):
+    try:
+        browser = p.chromium.connect_over_cdp(endpoint(), timeout=15000)
+    except Exception as error:
+        fail(f"No browser at {endpoint()}: {str(error)[:120]}")
+    # Only ever drive a Cvent tab: anything else is not this build's browser.
+    cvent = [pg for ctx in browser.contexts for pg in ctx.pages if (urlparse(pg.url or "").hostname or "").endswith(".cvent.com")]
+    if not cvent:
+        fail("No Cvent tab in this browser. Use request_takeover.")
+    return browser, cvent[-1]
+
+
+def snapshot(page, shot=None):
+    frames = []
+    for fi, frame in enumerate(page.frames):
+        try:
+            data = frame.evaluate(MARK, f"f{fi}p" if fi else "p")
+        except Exception:
+            continue
+        if fi and not data["items"]:
+            continue
+        frames.append({"frame": fi, "url": frame.url[:200], "items": data["items"],
+                       **({"text": data["text"]} if fi == 0 else {})})
+    out = {"pw_version": PW_VERSION, "url": page.url, "title": page.title(), "frames": frames}
+    if shot:
+        page.screenshot(path=shot, full_page=False)
+        out["screenshot"] = shot
+    return out
+
+
+def locate(page, ref):
+    for frame in page.frames:
+        loc = frame.locator(f"[{REF_ATTR}='{ref}']")
+        if loc.count() == 1:
+            return loc
+    raise ValueError(f"ref {ref} not found; take a new snapshot")
+
+
+def guard(loc, kind):
+    if kind not in ("click", "check"):
+        return
+    label = loc.evaluate("el => (el.getAttribute('aria-label') || el.innerText || el.value || '').trim()")
+    if FORBIDDEN.search(label or ""):
+        raise PermissionError(f"refused: '{label[:60]}' looks like publish/delete/send; a human must do this")
+
+
+def run_step(page, step):
+    kind = step.get("kind")
+    if kind == "wait":
+        time.sleep(min(int(step.get("ms", 500)), 10000) / 1000)
+        return
+    if kind == "press":
+        page.keyboard.press(step["key"])
+        return
+    if kind == "scroll":
+        page.mouse.wheel(0, int(step.get("dy", 600)))
+        return
+    loc = locate(page, step["ref"])
+    guard(loc, kind)
+    if kind == "click":
+        loc.click(timeout=10000)
+    elif kind == "fill":
+        if loc.get_attribute("type") == "password":
+            raise PermissionError("refused: password fields are filled only with fill_secret")
+        loc.fill(str(step.get("text", "")), timeout=10000)
+    elif kind == "select":
+        value = step.get("value")
+        try:
+            loc.select_option(value=value, timeout=5000)
+        except Exception:
+            loc.select_option(label=value, timeout=5000)
+    elif kind == "check":
+        loc.set_checked(bool(step.get("value", True)), timeout=10000)
+    elif kind == "upload":
+        path = os.path.abspath(step["path"])
+        if not os.path.isfile(path):
+            raise FileNotFoundError(path)
+        loc.set_input_files(path, timeout=10000)
+    elif kind == "drag":
+        loc.drag_to(locate(page, step["to"]), timeout=15000)
+    else:
+        raise ValueError(f"unknown step kind {kind!r}")
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] not in ("snapshot", "act", "shot"):
+        sys.exit(__doc__)
+    shot = None
+    if "--shot" in args:
+        shot = args[args.index("--shot") + 1]
+    with sync_playwright() as p:
+        _browser, page = connect(p)  # never close: it is the user's live browser
+        if args[0] == "shot":
+            page.screenshot(path=args[1])
+            print(json.dumps({"screenshot": args[1], "url": page.url}))
+            return
+        if args[0] == "snapshot":
+            print(json.dumps(snapshot(page, shot)))
+            return
+        steps = json.load(sys.stdin).get("steps", [])[:24]
+        done = []
+        for i, step in enumerate(steps):
+            try:
+                run_step(page, step)
+                done.append(i)
+            except Exception as error:  # report, never retry
+                page.wait_for_timeout(300)
+                print(json.dumps({"completed": done, "failed": i, "error": str(error)[:300],
+                                  "after": snapshot(page, shot)}))
+                sys.exit(1)
+        page.wait_for_timeout(500)
+        print(json.dumps({"completed": done, "after": snapshot(page, shot)}))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+## Appendix A: rr.py
 
 ```python
 #!/usr/bin/env python3
@@ -173,21 +475,25 @@ blocked; tell the user which ones.
   python3 rr.py extract  <rr.xlsx> <dir>   every sheet as tables -> extract.json, inventory.md
   python3 rr.py plan     <dir>             known layouts -> plan.json, plan.md (+ merges agent_plan.json)
   python3 rr.py validate <dir>             checks plan.json -> validation.md; exit 1 on errors
+  python3 rr.py images   <rr.xlsx> <dir>   embedded images -> assets/, assets.json (tab, cell, template flag)
 
 Columns are found by header text, never fixed letters. Layouts the planner does
 not recognise are marked needs_mapping in plan.json `coverage`, with the
 extracted rows attached, for the agent to map into agent_plan.json.
 """
 import datetime
+import hashlib
 import json
 import os
+import posixpath
 import re
 import sys
+import zipfile
 
 import openpyxl
 from openpyxl.utils import get_column_letter
 
-PARSER_VERSION = 4
+PARSER_VERSION = 5
 
 EXCLUDE_TITLE = re.compile(r"\bold\b|dnu|do.?not.?use|archive|for ko\b", re.I)
 PLACEHOLDER = re.compile(r"^\[.*\]$")
@@ -476,6 +782,81 @@ def extract(path, out_dir):
     with open(os.path.join(out_dir, "inventory.md"), "w") as f:
         f.write("\n".join(lines) + "\n")
     print("\n".join(lines))
+
+
+# ------------------------------------------------------------------ images
+
+# SHA-256 prefixes of stock pictures RR templates carry (onsite screen examples from
+# other shows, the badge font chart). They are references, never this show's art.
+TEMPLATE_IMAGES = {
+    "012198403e14a2a3",
+    "1d4524cd59e6d807",
+    "20a9631ba4980a02",
+    "2fa526dc36e2d579",
+    "3726cf2c598a1ad7",
+    "51f630768f2f86ca",
+    "540a5fb874165eaf",
+    "57f1138d841db1ed",
+    "7363443f7a6b08cc",
+    "7edd7e7fc03e65d0",
+    "9e08b52da048dcfa",
+    "c5417b32e6197df0",
+    "d91bbf8276e2c5d7",
+}
+
+
+def images(path, out_dir):
+    """Extract every embedded image with the tab and cell it sits on. Nothing here is
+    used as event art without a human OK: RR templates embed other shows' screenshots."""
+    z = zipfile.ZipFile(path)
+    names = set(z.namelist())
+    read = lambda p: z.read(p).decode("utf-8", "replace")
+    rels = {}
+    for m in re.finditer(r"<Relationship ([^>]*)/?>", read("xl/_rels/workbook.xml.rels")):
+        a = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+        rels[a.get("Id")] = a.get("Target", "")
+    found, seen = [], {}
+    for m in re.finditer(r"<sheet ([^>]*)/?>", read("xl/workbook.xml")):
+        a = dict(re.findall(r'([\w:]+)="([^"]*)"', m.group(1)))
+        sheet = a.get("name", "").replace("&amp;", "&")
+        sheet_rels = f"xl/worksheets/_rels/{posixpath.basename(rels.get(a.get('r:id'), ''))}.rels"
+        if sheet_rels not in names:
+            continue
+        for drawing in re.findall(r'Target="\.\./drawings/(drawing\d+\.xml)"', read(sheet_rels)):
+            media = {}
+            drawing_rels = f"xl/drawings/_rels/{drawing}.rels"
+            if drawing_rels in names:
+                for mm in re.finditer(r"<Relationship ([^>]*)/?>", read(drawing_rels)):
+                    aa = dict(re.findall(r'(\w+)="([^"]*)"', mm.group(1)))
+                    media[aa.get("Id")] = posixpath.basename(aa.get("Target", ""))
+            body = read(f"xl/drawings/{drawing}")
+            for anchor in re.findall(r"<xdr:(?:twoCellAnchor|oneCellAnchor|absoluteAnchor).*?"
+                                     r"</xdr:(?:twoCellAnchor|oneCellAnchor|absoluteAnchor)>", body, re.S):
+                embed = re.search(r'r:embed="([^"]+)"', anchor)
+                if not embed or not media.get(embed.group(1)):
+                    continue
+                file = media[embed.group(1)]
+                data = z.read(f"xl/media/{file}")
+                digest = hashlib.sha256(data).hexdigest()
+                col, row = re.search(r"<xdr:col>(\d+)", anchor), re.search(r"<xdr:row>(\d+)", anchor)
+                cell = f"{get_column_letter(int(col.group(1)) + 1)}{int(row.group(1)) + 1}" if col and row else ""
+                if digest not in seen:
+                    slug = re.sub(r"[^A-Za-z0-9]+", "-", sheet).strip("-")[:30]
+                    seen[digest] = f"{len(seen) + 1:02d}-{slug}{os.path.splitext(file)[1]}"
+                    os.makedirs(os.path.join(out_dir, "assets"), exist_ok=True)
+                    with open(os.path.join(out_dir, "assets", seen[digest]), "wb") as f:
+                        f.write(data)
+                template = digest[:16] in TEMPLATE_IMAGES
+                found.append({"file": f"assets/{seen[digest]}", "sheet": sheet, "cell": cell,
+                              "bytes": len(data), "sha256": digest, "template": template,
+                              "use": "reference only (template)" if template else "review: show-specific"})
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "assets.json"), "w") as f:
+        json.dump(found, f, indent=1)
+    for item in found:
+        print(f"{item['file']}  {item['sheet']}!{item['cell']}  {item['use']}")
+    if not found:
+        print("No embedded images.")
 
 
 # ------------------------------------------------------------------ plan: shared
@@ -1372,6 +1753,8 @@ def main():
         build_plan(args[1], "--keep-test-codes" in sys.argv)
     elif len(args) == 2 and args[0] == "validate":
         sys.exit(validate(args[1]))
+    elif len(args) == 3 and args[0] == "images":
+        images(args[1], args[2])
     else:
         sys.exit(__doc__)
 

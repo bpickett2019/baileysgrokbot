@@ -9,7 +9,7 @@ const skillsDir = path.join(teamDir, "skills");
 const skillFiles = readdirSync(skillsDir).filter((file) => file.endsWith(".md"));
 const skillNames = new Set(skillFiles.map((file) => file.replace(/\.md$/, "")));
 
-describe("cvent team skills", () => {
+describe("cvent build skill", () => {
   it.each(skillFiles)("%s imports as a valid skill", (file) => {
     const content = readFileSync(path.join(skillsDir, file), "utf8");
     const parsed = parseSkillMd(content);
@@ -31,8 +31,10 @@ describe("cvent team skills", () => {
     for (const ref of referenced) expect(skillNames, ref).toContain(ref.slice(1));
   });
 
-  it("embeds a versioned parser", () => {
-    const parse = readFileSync(path.join(skillsDir, "cvent-rr-parse.md"), "utf8");
-    expect(parse).toMatch(/```python\n[\s\S]*PARSER_VERSION = \d+[\s\S]*```/);
+  it("embeds its versioned tools", () => {
+    const skill = readFileSync(path.join(skillsDir, "cvent-build.md"), "utf8");
+    const blocks = [...skill.matchAll(/```python\n([\s\S]*?)```/g)].map((match) => match[1]);
+    expect(blocks.some((code) => /^PARSER_VERSION = \d+$/m.test(code))).toBe(true);
+    expect(blocks.some((code) => /^PW_VERSION = \d+$/m.test(code))).toBe(true);
   });
 });
