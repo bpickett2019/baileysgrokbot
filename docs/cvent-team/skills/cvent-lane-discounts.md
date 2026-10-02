@@ -1,22 +1,39 @@
 ---
 name: cvent-lane-discounts
 description: |-
-  Cvent build lane for pieces 7a/7b: Discount Code Template import (filtered: no [Free Text], PPCTEST*, PPC test rows) and group/volume discounts via the planner UI.
+  Cvent build lane: discount codes and vouchers (R7–R8 via /cvent-registration-build) plus group/volume discounts in the planner UI.
 ---
 
-# cvent-lane-discounts — Pieces 7a / 7b
+# cvent-lane-discounts — R7, R8 and group discounts
 
-Precondition: Registration lane done (types, fees, sessions exist), the browser lock held, and the correct event/environment verified. No publish/delete/clone.
+Precondition: R1–R6 are done (types, items and pricing exist), the browser lock
+is held, and the target event is verified. No publish, delete or clone.
 
-## Piece 7a — Discount codes (import)
-1. From plan.json take the filtered code list. Default drops: `[Free Text]` rows, `PPCTEST*`, and obvious PPC test rows (unless the user overrode).
-2. Build the import file in Cvent's Discount Code template format: code, name, type (% / amount), value, applies-to (reg types / sessions / admission items), capacity/usage limit, start/end dates. Save as `shared/cvent-builds/<FP>/discount_import.xlsx|csv`.
-3. Validate: codes unique; every applies-to target exists in the event; values parse; dates in range.
-4. Import via the planner's discount import (UI upload). Use an API only if an existing discount API integration is already available. Never invent one.
-5. Read back the discount list and reconcile counts against the plan.
+## R7 / R8 — Discount codes and vouchers
 
-## Piece 7b — Group / volume discounts (UI)
-Configure group/volume tiers (minimum group size → discount), eligible reg types, and date windows per the RR, manually in the UI.
+Follow `/cvent-registration-build` R7 and R8.
+
+- Test codes (`PPCTEST*`) and `[Free Text]` placeholder rows are already dropped
+  by the parser unless the user kept them.
+- Admission-item codes that aren't on the reg-type tab come from `code_map.json`,
+  which holds only user-confirmed mappings.
+
+## Group / volume discounts
+
+Source: `discounts.group_discounts`.
+
+Configure, in the UI:
+- the tiers (threshold → amount or percent);
+- the method and what each tier applies to (registrants at/before the threshold,
+  registrants after it, at an interval, or everyone);
+- eligible admission items and sessions;
+- the effective dates.
+
+When the list is empty, or the event details say "No group discounts", skip this
+with that reason.
 
 ## Report
-Status rows for 7a/7b: imported/planned counts, dropped codes list, import errors verbatim. Release the lock.
+
+`status.md` rows for R7, R8 and the group discounts, with imported/planned
+counts, the dropped code list, codes whose reg-type limit couldn't be enforced,
+and import errors verbatim. Release the lock.

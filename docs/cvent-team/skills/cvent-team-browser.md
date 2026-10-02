@@ -52,7 +52,8 @@ Do not paste the reference's JavaScript examples into shell and expect them to w
 ## Observe, batch, verify
 
 1. On first use or a handoff, take `browser_snapshot` of the current browser before
-   navigating away from it. Reuse the user's existing tab and login. Check the exact
+   navigating away from it. Reuse the user's existing tab and login, unless the
+   build runbook requires a fresh sign-in. Check the exact
    event and account; stop on an unexpected session or environment.
 2. Choose the cheapest useful observation. Prefer a semantic snapshot for ordinary
    forms and links. Do not request both a screenshot and a snapshot by default.

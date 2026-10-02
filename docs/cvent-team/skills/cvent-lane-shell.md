@@ -1,23 +1,32 @@
 ---
 name: cvent-lane-shell
 description: |-
-  Cvent build lane for pieces 1–3: event shell fields, branding/theme, registration paths and website shell/footer links, driven from an approved RR build plan via the planner UI.
+  Cvent build lane: piece 1 event shell fields, then the website (theme, header, footer, body widgets) via /cvent-website-build.
 ---
 
-# cvent-lane-shell — Pieces 1–3
+# cvent-lane-shell — Event shell and website
 
-Precondition: approved `plan.json`, the browser lock held, and the named event open in the correct environment (verified against the identity key). Rules from /cvent-rr-event-build apply: no publish/delete/clone, UI only.
+Precondition: an approved `plan.json` (with `decisions.md`), the browser lock,
+and the target event verified as described in `/cvent-rr-event-build`.
+No publish, delete or clone.
 
 ## Piece 1 — Event shell fields
-Planner → Event → General/Event Information. Set or verify: title, event code (FP code if the RR maps it), start/end dates and times, time zone, venue/location, currency, languages, planner/contact, capacity, and the registration open/close deadline. Change only fields the RR specifies. Record before → after values.
 
-## Piece 2 — Branding / theme
-Site Designer → Theme. Apply colors, fonts, logo/header images, and favicon from the RR. If the RR references asset files that weren't provided, mark blocked and list the missing assets. Save only; do not publish the site.
+Planner → Event → General / Event Information. Set or verify the fields the RR
+specifies:
+- title, event code, start/end dates and times, time zone;
+- venue/location, currency, languages;
+- planner/contact, capacity, and the registration deadline.
 
-## Piece 3 — Registration paths & website shell
-- Registration Paths: create or rename paths per the RR and assign reg types later (Registration lane links types to paths; note the dependency).
-- Website shell: pages/navigation skeleton and footer links (privacy, terms, contact, and so on) with exact URLs from the RR.
-- Leave Site Designer page content that isn't shell-related to Site & Comms (piece 12).
+In test-target mode, leave the title, code and dates alone unless the user said
+otherwise; set only the remaining fields. Record before → after values.
+
+## Website — W1 to W4
+
+Run `/cvent-website-build` once the registration lane has finished paths (R2),
+because the Register buttons link to them.
 
 ## Report
-Append a row per piece to `status.md` (done/blocked/skipped, counts, notes, screenshot path). Release the lock.
+
+Append a row per piece to `status.md` (done/blocked/skipped, counts, notes,
+evidence). Release the lock.

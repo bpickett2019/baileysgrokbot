@@ -4,19 +4,29 @@ Reusable configuration for a supervised RR-workbook-to-Cvent workflow. This is a
 initial playbook, not a validated unattended event builder.
 
 - `bots.json`: Chief and six specialist definitions, with no account or database IDs.
-- `skills/`: eight build runbooks, the active Team Computer browser workflow, and an optional host-Ego adapter guide.
+- `skills/`: build runbooks, the active Team Computer browser workflow, and an optional host-Ego adapter guide.
+  - `cvent-rr-parse` embeds the RR parser, so a bot can install it without a repo checkout.
+  - `cvent-website-build` covers theme, header, footer and the six body widget types.
+  - `cvent-registration-build` covers types, paths, admission items, pricing, optional items, advanced rules, discounts and vouchers.
 - `../vendor/ego-browser/`: the complete unmodified Ego skill, references, installer, example learnings, and MIT license (reference only; not auto-loaded).
 - Chief coordinates with `cvent-rr-event-build`; specialists reference their lane skills.
 - Use a Team Computer and a user-configured model connection. Model credentials are not included.
 
-On a fresh instance, create/import the skills through the Skills interface and create
-bots using these definitions. Give Chief the orchestration runbook as standing guidance.
+On a fresh instance, import the skills and create bots using these definitions. To
+import them, either paste each file into Knowledge → Skills, or send Chief this
+message (it uses only the built-in shell, file and skill tools):
+
+> Run `git clone --depth 1 https://github.com/bpickett2019/baileysgrokbot cvent-team-src`
+> with shell `cwd: "shared"` (or `git -C cvent-team-src pull` if it already exists).
+> For each file in `shared/cvent-team-src/docs/cvent-team/skills/`, `read_file` it. Call `skill_update` with the full content if a skill with that
+> name exists, otherwise `skill_create`. Then list the skill names you installed.
+
+Re-run the same message after updates; the running instance keeps older copies in
+its database until then. Give Chief the orchestration runbook as standing guidance.
 With `BROWSER_PROVIDER=computer`, use `/cvent-team-browser` for Ego-inspired semantic
 observation, batched actions, and verification on the existing Team screen. The
 skill does not install Ego Lite or expose its JavaScript SDK. Each bot can have a
 different screen; keep the signed-in bot driving if specialists lack that session.
-Importing this directory is not automatic; the current running instance already has
-these bots and skills stored in its local database.
 
 ## Included code changes
 
@@ -34,10 +44,21 @@ Environment files, model credentials, local database contents, uploaded workbook
 generated event plans, browser sessions, transcripts, and production event details.
 This repository is not a backup of the running instance's private state.
 
+## Runtime files
+
+Each build writes to `shared/cvent-builds/<FP>/`: `plan.json`, `plan.md`,
+`decisions.md` (the user's answers, which override the plan), `code_map.json`,
+`status.md` and `qa.md`.
+
+Bots also read and append `shared/cvent-learnings/*.md`: the exact navigation
+paths, labels and gotchas from verified runs. These notes turn successful runs
+into repeatable procedures. Never put event data or credentials in them.
+
 ## Execution rules
 
-Require a reviewed plan, a named target event, explicit environment selection, and
-planner access. Default to sandbox. Do not publish, activate, send communications,
+Require a reviewed plan, a named target event (build mode, or test-target mode for
+loading an RR into an existing test event without changing its identity), explicit
+environment selection, and planner access via a fresh sign-in each run. Default to sandbox. Do not publish, activate, send communications,
 delete, or clone without the authorization specified in the runbooks. Browser work
 must be serialized and verified. These are agent instructions, not a substitute for
 application-level permissions or exhaustive QA.

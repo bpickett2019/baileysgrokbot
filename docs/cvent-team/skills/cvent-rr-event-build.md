@@ -1,44 +1,132 @@
 ---
 name: cvent-rr-event-build
 description: |-
-  Orchestrator runbook for building a Cvent event from an Emerald RR workbook: safety policy, intake, plan approval, lane order, single-browser queue, and per-piece reporting.
+  Orchestrator runbook for building a Cvent event from an RR workbook: safety policy, intake, login, plan approval, lane order, single-browser queue, and per-piece reporting.
 ---
 
 # cvent-rr-event-build — Orchestrator runbook
 
 ## Hard rules (never violate)
-1. **Never Publish / Go Live / Launch / Activate** the event, site, or any communication. If a button would do that, don't click it. If a save dialog offers "save and publish," pick save-only or stop.
-2. **Sandbox by default.** Production only if the user explicitly names production for this run.
-3. **Edit only the exact event the user named** (URL / event ID / title), verified against the RR identity key (FP Code, Event Name, primary dates). Stop if there's a mismatch.
-4. **No delete** (events, types, fees, questions, codes, attendees). To fix a mistake, edit in place or report it.
-5. **No clone** unless the user explicitly asks to clone.
-6. **Never invent REST writes** for reg types, questions, reg paths, Site Designer, or attendees. The only allowed non-UI channel is discount code import / an existing discount API that is already available.
-7. **One browser computer at a time.** UI work is queued and serialized. Specialists may parse/prep in parallel.
-8. Ambiguous or high-impact → pause and ask.
 
-## Intake (collect all before parsing/executing)
-a. RR Excel upload
-b. Exact Cvent event URL / ID / title
-c. Sandbox vs production
-d. Planner access: already signed in on the browser computer, saved login (request_secret auth login at the Cvent sign-in origin), or user takeover for SSO/2FA. Never take passwords in chat.
+1. **Never Publish, Go Live, Launch or Activate** the event, the site or any
+   communication. If a save dialog offers "save and publish", choose save-only or
+   stop.
+2. **Sandbox by default.** Use production only if the user explicitly names
+   production for this run.
+3. **Edit only the exact event the user named** (URL, event ID or title), and
+   verify it before every lane. See "Target modes" below.
+4. **No delete** of events, types, fees, questions, codes, attendees or anything
+   else, and nothing outside the target event. Fix mistakes by editing in place,
+   or report them.
+5. **No clone** unless the user explicitly asks for one.
+6. **Never invent REST writes.** Types, questions, paths, Site Designer and
+   attendees are UI only. Discounts may go through the planner's import, or
+   through an installed Cvent API connector found in `task_catalog`, but only
+   after confirming that the connector targets the same environment, the verified
+   event ID, and event-level (not account-level) discounts.
+7. **One browser driver at a time.** UI work is queued and serialized. Specialists
+   may parse and prepare in parallel.
+8. If something is ambiguous or high-impact, pause and ask.
+
+## Target modes
+
+- **Build mode** (the default): the target event *is* the RR's event. Its identity
+  key (FP code, event name, primary dates) must match the plan. On a mismatch,
+  stop.
+- **Test-target mode:** the user names an existing test event (for example a
+  cloned sandbox event) to receive the RR's configuration. Verify the target by
+  the exact title or ID the user gave; the RR identity key is only the data
+  source. Don't rename the event or change its dates or code unless the user says
+  so. Everything else is built inside that event. Record the mode in
+  `status.md`.
+
+## Intake (collect all of it before parsing or executing)
+
+a. The RR Excel upload.
+b. The exact Cvent event URL, ID or title, and the target mode.
+c. Sandbox or production.
+d. **Login.** Every run starts with a fresh Cvent sign-in; don't rely on a session
+   left over from an earlier run.
+   - If the browser is already signed in at the start of a run, use Cvent's own
+     Log Out first. This overrides the "reuse the existing login" default in the
+     browser skills for this team.
+   - **Computer provider:** if `list_secrets` has no saved Cvent login, call
+     `request_secret` for one at the Cvent sign-in origin. On the sign-in page,
+     `fill` the Account Name field (not a secret; ask for it once), then use
+     `fill_secret` for the username and password, then click Log In.
+   - **Ego provider:** `fill_secret` isn't available. Ask the user to sign in
+     directly in the Ego window.
+   - MFA, CAPTCHA or SSO: `request_takeover` (computer provider) or the user
+     (Ego provider).
+   - Never take passwords in chat.
 
 ## Flow
-1. **Parse** with /cvent-rr-parse → `shared/cvent-builds/<FPCODE>/plan.json` + `plan.md`.
-2. **Present plan** (piece counts, channel tags, skipped/dropped, open questions). **Wait for user OK.**
-3. **Open the named event** in the planner (sandbox). Read back event title, code, dates, and environment, and match them to the identity key. Screenshot as evidence.
-4. **Execute lanes in order**, one UI owner at a time:
-   Shell (1–3) → Registration (4–6) → Discounts (7a/7b) → Questions (8–9) → Site & Comms (10–12) → Badges & Onsite (14–17).
-5. **Surface discipline:** stay on Registration Overview for types → fees → sessions; then run discount import; then Site Designer for questions/theme work. Don't bounce between surfaces mid-batch.
-6. After each piece, record status in `shared/cvent-builds/<FPCODE>/status.md`: `piece | done / blocked / skipped | count built / planned | evidence | notes`.
-7. **Final report** to the user: per-piece status table, blockers with the exact UI message, anything left for a human (including the publish step, which stays with the user).
+
+1. **Parse** with `/cvent-rr-parse`. This writes `shared/cvent-builds/<FP>/plan.json`
+   and `plan.md`.
+2. **Present the plan** with its open questions first. **Wait for the user's OK**,
+   and record the answers in `decisions.md` and `code_map.json`.
+3. **Sign in and open the target event** (sandbox). Read back the title, code,
+   dates and environment, check them against the target mode, and capture a
+   snapshot as evidence.
+4. **Run the lanes in this order,** one UI owner at a time:
+
+| Order | Lane | Skill | Pieces |
+|---|---|---|---|
+| 1 | Shell | `/cvent-lane-shell` | 1: event shell fields |
+| 2 | Registration | `/cvent-registration-build` | R1 types · R2 paths · R3 admission items · R4 pricing · R5 optional items · R6 advanced rules |
+| 3 | Discounts | `/cvent-lane-discounts` (R7–R8 via `/cvent-registration-build`) | R7 discount codes · R8 vouchers · group/volume discounts |
+| 4 | Questions | `/cvent-lane-questions` | 8: show questions and display rules · 9: approvals |
+| 5 | Website | `/cvent-website-build` | W1 theme · W2 header · W3 footer · W4 body widgets |
+| 6 | Site & Comms | `/cvent-lane-site-comms` | 10: policies · 11: communications · 12: integrations |
+| 7 | Badges & Onsite | `/cvent-lane-badges-onsite` | 14–16, then 17: QA |
+
+   The website lane runs after registration because the Register buttons link to
+   paths that must already exist.
+
+5. **Surface discipline:** finish each surface before moving to the next.
+   Registration screens cover R1–R8; Site Designer covers the website lane. Don't
+   bounce between surfaces in the middle of a batch.
+6. After each piece, the lane appends a row to `status.md`:
+   `piece | done/blocked/skipped | built/planned | evidence | notes`.
+7. **Final report** to the user:
+   - a per-piece status table;
+   - each blocker with the exact UI message;
+   - pre-existing items that aren't in the RR (left untouched);
+   - everything left for a human, including publishing, which always stays with
+     the user.
+
+## Files and shell
+
+File tools resolve `shared/...` to the Team root, but `shell` starts in the bot's
+own folder. Run shell commands with `cwd: "shared"` and paths relative to it
+(`cvent-builds/<FP>/...`).
+
+Every lane reads the same files:
+- `plan.json`, the source of truth. Data for the approvals, communications,
+  policies, integrations, badge and onsite lanes is under `communications` and
+  `other_tabs`;
+- `decisions.md`, which overrides the plan;
+- `code_map.json`.
 
 ## Browser lock
-- Lock file: `shared/cvent-builds/LOCK` containing `{holder, event, piece, started_utc}`.
-- Only the holder drives the UI. Release it on handoff. The orchestrator assigns the next holder.
-- Before any coordinate action, observe the screen. Another actor may have changed it.
+
+- The lock file is `shared/cvent-builds/LOCK`, containing
+  `{holder, event, piece, started_utc}`.
+- Only the holder drives the UI. It releases the lock on handoff, and Chief assigns
+  the next holder.
+- Before any coordinate action, observe the screen; another actor may have changed
+  it.
 
 ## Delegation message template (to a lane bot)
-"Lane: <X>. Event: <URL/ID> (<env>). Identity: <FP, name, dates>. Plan: shared/cvent-builds/<FP>/plan.json pieces <ids>. You hold the browser lock now. Rules: no publish/delete/clone, UI only (except discount import). Report per piece done/blocked/skipped into status.md, then release the lock and reply with result."
+
+"Lane: <X>. Skill: /<skill>, pieces <ids>. Event: <URL/ID/title> (<env>, <build|test-target> mode). Identity: <FP, name, dates>. Plan: shared/cvent-builds/<FP>/plan.json + decisions.md (keys for your lane: <keys>). You hold the browser lock now. Rules: no publish/delete/clone; UI only except discounts via installed connector or import. Read and update shared/cvent-learnings/. Report each piece as done/blocked/skipped in status.md, then release the lock and reply with the result."
 
 ## Stop conditions
-Wrong event or environment · login/2FA wall (request_takeover) · a publish/activate prompt appears · a required reference is missing (e.g. a fee's reg type) · Cvent validation errors you can't resolve without guessing.
+
+- Wrong event or environment.
+- A login, MFA or SSO wall.
+- A publish or activate prompt.
+- A missing required reference (for example a fee's reg type).
+- An unanswered open question that a step needs.
+- A Cvent validation error you can't resolve without guessing.
